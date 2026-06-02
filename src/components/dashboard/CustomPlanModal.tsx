@@ -26,6 +26,8 @@ const SLEEP_ADVICE: Record<string, string> = {
   good: '睡眠充足，完全恢复',
 };
 
+const DEMO_DATA_LABEL = '演示数据';
+
 export default function CustomPlanModal({ open, onClose, personality }: CustomPlanModalProps) {
   const [step, setStep] = useState<Step>('syncing');
   const [syncProgress, setSyncProgress] = useState(0);
@@ -132,7 +134,7 @@ export default function CustomPlanModal({ open, onClose, personality }: CustomPl
                 正在读取健康数据
               </p>
               <p className="text-[11px] text-slate-500 font-mono">
-                Syncing HealthKit & Watch Data...
+                Syncing Demo Health Data...
               </p>
 
               {/* Pulsing data lines */}
@@ -264,7 +266,7 @@ export default function CustomPlanModal({ open, onClose, personality }: CustomPl
 
               {/* Disclaimer */}
               <p className="text-[10px] text-slate-600 font-mono text-center">
-                基于模拟数据分析 · 实际计划请咨询专业教练
+                基于演示健康数据分析 · 实际计划请咨询专业教练
               </p>
             </div>
           )}
@@ -274,9 +276,9 @@ export default function CustomPlanModal({ open, onClose, personality }: CustomPl
         <div className="px-5 py-3 border-t border-slate-700/40 flex items-center justify-between">
           <span className="text-[10px] text-slate-600 font-mono">
             {step === 'syncing'
-              ? 'Apple HealthKit · WatchOS 11'
+              ? `${DEMO_DATA_LABEL} · 未接入 HealthKit`
               : step === 'metrics'
-                ? '数据来源：模拟健康数据'
+                ? `数据来源：${DEMO_DATA_LABEL}`
                 : `🎯 ${PERSONALITY_LABELS[personality]} 生成`}
           </span>
           {step === 'plan' && (

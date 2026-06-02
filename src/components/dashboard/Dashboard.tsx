@@ -205,11 +205,24 @@ export default function Dashboard() {
         setRpiConnected(status.connected);
         break;
       }
-      case 'voice_command_result': {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const p = msg.payload as any;
-        if (p.reply) {
-          setVoiceMessages(prev => [...prev.slice(-9), { from: 'coach', text: p.reply }]);
+      case 'voice_recognized': {
+        const p = msg.payload as { text?: string };
+        if (p.text) {
+          setVoiceMessages(prev => [...prev.slice(-9), { from: 'user', text: p.text }]);
+        }
+        break;
+      }
+      case 'voice_reply': {
+        const p = msg.payload as { text?: string };
+        if (p.text) {
+          setVoiceMessages(prev => [...prev.slice(-9), { from: 'coach', text: p.text }]);
+        }
+        break;
+      }
+      case 'voice_reply_tts': {
+        const p = msg.payload as { audioUrl?: string };
+        if (p.audioUrl) {
+          playAudioUrl(p.audioUrl);
         }
         break;
       }

@@ -175,7 +175,7 @@ export default function PoseCoach() {
                 reader.onload = () => {
                   const base64 = (reader.result as string).split(',')[1];
                   if (wsRef.current) {
-                    wsRef.current.send({ type: 'voice_command', payload: { audio: base64 } });
+                    wsRef.current.send({ type: 'voice_command', payload: { base64Data: base64 } });
                   }
                 };
                 reader.readAsDataURL(e.data);

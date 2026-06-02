@@ -444,10 +444,7 @@ export class PoseAlgorithmEngine {
       case 'squat':
         return this.recognizeSquatStage(angles, cleaning, st);
       case 'push_up':
-        return this.recognizeBendStage(
-          avgDefined(angles.leftElbowAngle, angles.rightElbowAngle),
-          st, 155, 95, 'up', 'bottom',
-        );
+        return this.recognizePushUpStage(angles, cleaning, st);
       case 'lunge': {
         const frontKnee = minDefined(angles.leftKneeAngle, angles.rightKneeAngle);
         return this.recognizeBendStage(frontKnee, st, 160, 105);
@@ -550,6 +547,23 @@ export class PoseAlgorithmEngine {
     if (value < prev - 4) return { stage: 'descending', primaryValue: value };
     if (value > prev + 4) return { stage: 'ascending', primaryValue: value };
     return { stage: ps, primaryValue: value };
+  }
+
+  /** 俯卧撑：必须先满足水平支撑姿态，再用肘角判断上下阶段 */
+  private recognizePushUpStage(
+    angles: JointAngles,
+    cleaning: CleaningResult,
+    st: ReturnType<typeof this.state>,
+  ): { stage: ExerciseStage; primaryValue: number | null } {
+    if (!this.isPushUpPosition(cleaning, angles)) {
+      st.hadDownPhase = false;
+      return { stage: 'unknown', primaryValue: null };
+    }
+
+    return this.recognizeBendStage(
+      avgDefined(angles.leftElbowAngle, angles.rightElbowAngle),
+      st, 155, 95, 'up', 'bottom',
+    );
   }
 
   /** 开合跳 */
@@ -659,6 +673,11 @@ export class PoseAlgorithmEngine {
       score -= 15; errors.push('back_leaning_forward');
     }
 
+    // 俯卧撑姿态门槛：防止站立摆手被识别为俯卧撑
+    if (exercise === 'push_up' && !this.isPushUpPosition(cleaning, angles)) {
+      score -= 35; warnings.push('not_push_up_position');
+    }
+
     // 俯卧撑塌腰
     if (exercise === 'push_up' && this.pushUpHipsSag(kp)) {
       score -= 20; errors.push('hips_sagging');
@@ -732,6 +751,31 @@ export class PoseAlgorithmEngine {
     if (!isValid(shoulder) || !isValid(hip) || !isValid(ankle)) return false;
     const lineY = (shoulder.y + ankle.y) / 2;
     return hip.y > lineY + Math.max(0.05, Math.abs(ankle.y - shoulder.y) * 0.25);
+  }
+
+  private isPushUpPosition(cleaning: CleaningResult, angles: JointAngles): boolean {
+    const kp = cleaning.keypoints;
+    const shoulder = midKP(kp, 'shoulder');
+    const hip = midKP(kp, 'hip');
+    const ankle = midKP(kp, 'ankle');
+    if (!isValid(shoulder) || !isValid(hip) || !isValid(ankle)) return false;
+    if (cleaning.confidenceMean < 0.55 || cleaning.abnormalFrame) return false;
+
+    const bodyDx = Math.abs(shoulder.x - ankle.x);
+    const bodyDy = Math.abs(shoulder.y - ankle.y);
+    const bodySpan = Math.hypot(bodyDx, bodyDy);
+    if (bodySpan < 0.25) return false;
+
+    // 站立时身体主轴接近竖直；俯卧撑侧视时肩-踝主轴应明显更接近水平。
+    const horizontalEnough = bodyDx > 0.18 && bodyDy / Math.max(bodyDx, 0.0001) <= 0.75;
+    const straightEnough = angles.bodyLineAngle !== null && angles.bodyLineAngle <= 28;
+
+    const visibleWrists = [kp.left_wrist, kp.right_wrist].filter(isValid);
+    const visibleElbows = [kp.left_elbow, kp.right_elbow].filter(isValid);
+    const hasArmSupport = visibleWrists.length > 0 && visibleElbows.length > 0
+      && visibleWrists.some(wrist => wrist.y >= shoulder.y - bodySpan * 0.35);
+
+    return horizontalEnough && straightEnough && hasArmSupport;
   }
 
   private isLeftRightUnbalanced(kp: Record<string, CleanKP>): boolean {
