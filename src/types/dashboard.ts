@@ -20,6 +20,7 @@ export interface Workout {
 export interface Biometrics {
   heartRate: number;
   hrThreshold: number;
+  hasLiveHeartRate?: boolean;
   steps?: number;
   activeEnergy?: number;
   restingHeartRate?: number;

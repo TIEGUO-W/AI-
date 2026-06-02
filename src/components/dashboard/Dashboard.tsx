@@ -288,14 +288,15 @@ export default function Dashboard() {
           ...prev,
           biometrics: {
             ...prev.biometrics,
-            ...(typeof sensor.heartRate === 'number' ? { heartRate: Math.round(sensor.heartRate) } : { heartRate: mockData.biometrics.heartRate }),
+            ...(typeof sensor.heartRate === 'number' ? { heartRate: Math.round(sensor.heartRate) } : {}),
+            hasLiveHeartRate: typeof sensor.heartRate === 'number',
             ...(typeof sensor.steps === 'number' ? { steps: Math.round(sensor.steps) } : {}),
             ...(typeof sensor.activeEnergy === 'number' ? { activeEnergy: Math.round(sensor.activeEnergy) } : {}),
             ...(typeof sensor.restingHeartRate === 'number' ? { restingHeartRate: Math.round(sensor.restingHeartRate) } : {}),
             ...(typeof sensor.hrv === 'number' ? { hrv: Math.round(sensor.hrv) } : {}),
             ...(typeof sensor.sleepHours === 'number' ? { sleepHours: Math.round(sensor.sleepHours * 10) / 10 } : {}),
             ...(typeof sensor.recoveryIndex === 'number' ? { recoveryIndex: Math.round(sensor.recoveryIndex) } : {}),
-            source: typeof sensor.heartRate === 'number' ? (sensor.source ?? 'apple_health') : 'demo',
+            source: sensor.source ?? 'apple_health',
             updatedAt: sensor.updatedAt,
           },
           environment: {

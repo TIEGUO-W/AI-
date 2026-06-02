@@ -23,6 +23,7 @@ export const mockData: DashboardData = {
   biometrics: {
     heartRate: initialHR,
     hrThreshold: 160,
+    hasLiveHeartRate: false,
     source: 'demo',
     updatedAt: null,
   },

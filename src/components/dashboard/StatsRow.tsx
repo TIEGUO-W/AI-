@@ -14,7 +14,8 @@ interface StatsRowProps {
 const MUSIC_TRACKS = ['赛博电音', '热血燃曲', '禅意拉伸'] as const;
 
 export default function StatsRow({ workout, biometrics, onOpenPlanModal }: StatsRowProps) {
-  const isHrHigh = biometrics.heartRate > biometrics.hrThreshold;
+  const hasHeartRate = biometrics.source === 'demo' || biometrics.hasLiveHeartRate !== false;
+  const isHrHigh = hasHeartRate && biometrics.heartRate > biometrics.hrThreshold;
   const [musicTrack, setMusicTrack] = useState<string>(MUSIC_TRACKS[0]);
   const [musicOpen, setMusicOpen] = useState(false);
   const sourceLabel = biometrics.source === 'apple_health'
@@ -103,12 +104,12 @@ export default function StatsRow({ workout, biometrics, onOpenPlanModal }: Stats
         </div>
         <div className="flex items-baseline gap-1 mt-1">
           <span className={`text-xl font-bold font-mono tabular-nums ${isHrHigh ? 'text-red-400' : 'text-white'}`}>
-            {biometrics.heartRate}
+            {hasHeartRate ? biometrics.heartRate : '--'}
           </span>
           <span className="text-[10px] text-slate-400 font-mono">BPM</span>
         </div>
         <div className="mt-1 text-[9px] text-slate-500 font-mono">
-          {sourceLabel}{typeof biometrics.steps === 'number' ? ` · ${biometrics.steps} steps` : ''}
+          {hasHeartRate ? sourceLabel : '等待心率'}{typeof biometrics.steps === 'number' ? ` · ${biometrics.steps} steps` : ''}
         </div>
       </div>
 
