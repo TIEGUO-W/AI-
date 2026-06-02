@@ -47,15 +47,15 @@ interface WorkoutSnapshot {
 }
 
 interface SensorSnapshot {
-  heartRate?: number;
-  steps?: number;
-  activeEnergy?: number;
-  restingHeartRate?: number;
-  hrv?: number;
-  sleepHours?: number;
-  recoveryIndex?: number;
-  temp?: number;
-  humidity?: number;
+  heartRate?: number | null;
+  steps?: number | null;
+  activeEnergy?: number | null;
+  restingHeartRate?: number | null;
+  hrv?: number | null;
+  sleepHours?: number | null;
+  recoveryIndex?: number | null;
+  temp?: number | null;
+  humidity?: number | null;
   source?: 'apple_health' | 'manual';
   updatedAt: number | null;
 }
@@ -288,14 +288,14 @@ export default function Dashboard() {
           ...prev,
           biometrics: {
             ...prev.biometrics,
-            ...(typeof sensor.heartRate === 'number' ? { heartRate: Math.round(sensor.heartRate) } : {}),
+            ...(typeof sensor.heartRate === 'number' ? { heartRate: Math.round(sensor.heartRate) } : { heartRate: mockData.biometrics.heartRate }),
             ...(typeof sensor.steps === 'number' ? { steps: Math.round(sensor.steps) } : {}),
             ...(typeof sensor.activeEnergy === 'number' ? { activeEnergy: Math.round(sensor.activeEnergy) } : {}),
             ...(typeof sensor.restingHeartRate === 'number' ? { restingHeartRate: Math.round(sensor.restingHeartRate) } : {}),
             ...(typeof sensor.hrv === 'number' ? { hrv: Math.round(sensor.hrv) } : {}),
             ...(typeof sensor.sleepHours === 'number' ? { sleepHours: Math.round(sensor.sleepHours * 10) / 10 } : {}),
             ...(typeof sensor.recoveryIndex === 'number' ? { recoveryIndex: Math.round(sensor.recoveryIndex) } : {}),
-            source: sensor.source ?? 'apple_health',
+            source: typeof sensor.heartRate === 'number' ? (sensor.source ?? 'apple_health') : 'demo',
             updatedAt: sensor.updatedAt,
           },
           environment: {

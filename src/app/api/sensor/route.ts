@@ -6,15 +6,15 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 interface SensorState {
-  heartRate?: number;
-  steps?: number;
-  activeEnergy?: number;
-  restingHeartRate?: number;
-  hrv?: number;
-  sleepHours?: number;
-  recoveryIndex?: number;
-  temp?: number;
-  humidity?: number;
+  heartRate?: number | null;
+  steps?: number | null;
+  activeEnergy?: number | null;
+  restingHeartRate?: number | null;
+  hrv?: number | null;
+  sleepHours?: number | null;
+  recoveryIndex?: number | null;
+  temp?: number | null;
+  humidity?: number | null;
   source?: 'apple_health' | 'manual';
   updatedAt: number | null;
   updatedAtIso?: string | null;
@@ -55,6 +55,16 @@ function readFirstNumber(body: Record<string, unknown>, keys: string[]): number 
   return undefined;
 }
 
+function mergeNumber(
+  body: Record<string, unknown>,
+  keys: string[],
+  previous: number | null | undefined,
+): number | null | undefined {
+  const hasKey = keys.some((key) => Object.prototype.hasOwnProperty.call(body, key));
+  if (!hasKey) return previous;
+  return readFirstNumber(body, keys) ?? null;
+}
+
 async function readBody(request: NextRequest): Promise<Record<string, unknown>> {
   const contentType = request.headers.get('content-type') || '';
 
@@ -90,15 +100,15 @@ export async function POST(request: NextRequest) {
     const updatedAt = Date.now();
     const next: SensorState = {
       ...sensorState,
-      heartRate: readFirstNumber(body, ['heartRate', 'hr', 'heart_rate', '心率']) ?? sensorState.heartRate,
-      steps: readFirstNumber(body, ['steps', 'stepCount', 'step_count', '步数']) ?? sensorState.steps,
-      activeEnergy: readFirstNumber(body, ['activeEnergy', 'calories', 'energy', '活动能量', '卡路里']) ?? sensorState.activeEnergy,
-      restingHeartRate: readFirstNumber(body, ['restingHeartRate', 'restingHR', 'resting_hr', '静息心率']) ?? sensorState.restingHeartRate,
-      hrv: readFirstNumber(body, ['hrv', 'HRV', '心率变异性']) ?? sensorState.hrv,
-      sleepHours: readFirstNumber(body, ['sleepHours', 'sleep', 'sleep_hours', '睡眠', '睡眠时长']) ?? sensorState.sleepHours,
-      recoveryIndex: readFirstNumber(body, ['recoveryIndex', 'recovery', '恢复指数']) ?? sensorState.recoveryIndex,
-      temp: readFirstNumber(body, ['temp', 'temperature', '温度']) ?? sensorState.temp,
-      humidity: readFirstNumber(body, ['humidity', '湿度']) ?? sensorState.humidity,
+      heartRate: mergeNumber(body, ['heartRate', 'hr', 'heart_rate', '心率'], sensorState.heartRate),
+      steps: mergeNumber(body, ['steps', 'stepCount', 'step_count', '步数'], sensorState.steps),
+      activeEnergy: mergeNumber(body, ['activeEnergy', 'calories', 'energy', '活动能量', '卡路里'], sensorState.activeEnergy),
+      restingHeartRate: mergeNumber(body, ['restingHeartRate', 'restingHR', 'resting_hr', '静息心率'], sensorState.restingHeartRate),
+      hrv: mergeNumber(body, ['hrv', 'HRV', '心率变异性'], sensorState.hrv),
+      sleepHours: mergeNumber(body, ['sleepHours', 'sleep', 'sleep_hours', '睡眠', '睡眠时长'], sensorState.sleepHours),
+      recoveryIndex: mergeNumber(body, ['recoveryIndex', 'recovery', '恢复指数'], sensorState.recoveryIndex),
+      temp: mergeNumber(body, ['temp', 'temperature', '温度'], sensorState.temp),
+      humidity: mergeNumber(body, ['humidity', '湿度'], sensorState.humidity),
       source: body.source === 'manual' ? 'manual' : 'apple_health',
       updatedAt,
       updatedAtIso: new Date(updatedAt).toISOString(),
