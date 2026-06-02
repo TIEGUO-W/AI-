@@ -97,7 +97,7 @@ export function setupCameraHandler(wss: WebSocketServer) {
 }
 
 // ─── 双层话术架构：快速层 + 深度层 ─────────────────────
-import { PoseAlgorithmEngine, type AlgorithmResult } from './pose-algorithm';
+import { PoseAlgorithmEngine, SUPPORTED_EXERCISES, type AlgorithmResult } from './pose-algorithm';
 import { generateCoaching } from './coaching-engine';
 import { generateQuickCoaching, generateIdleCoaching, getExerciseName } from './coaching-templates';
 import { TTSClient, Config } from 'coze-coding-dev-sdk';
@@ -119,6 +119,14 @@ let deepCoachBusy = false;
 let lastActivityTime = Date.now();
 let coachTimer: ReturnType<typeof setInterval> | null = null;
 let ttsClient: TTSClient | null = null;
+
+function normalizeCameraExercise(exercise: string | undefined): string | undefined {
+  if (!exercise) return undefined;
+  if ((SUPPORTED_EXERCISES as readonly string[]).includes(exercise)) return exercise;
+  if (exercise === 'pushup') return 'push_up';
+  if (exercise === 'high_knee') return 'high_knees';
+  return 'squat';
+}
 
 function getAlgorithmEngine(): PoseAlgorithmEngine {
   if (!algorithmEngine) {
@@ -388,7 +396,7 @@ async function askLegacyCoachCamera(result: AlgorithmResult) {
 
 /** 浏览器可设置当前运动类型 */
 export function setExerciseForCamera(exercise: string | undefined) {
-  currentExercise = exercise;
+  currentExercise = normalizeCameraExercise(exercise);
   if (algorithmEngine) {
     algorithmEngine.reset();
   }

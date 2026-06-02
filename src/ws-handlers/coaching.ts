@@ -9,7 +9,7 @@
 
 import type { WebSocket } from 'ws';
 import type { WsMessage, PoseFrame } from '../lib/ws-client';
-import { PoseAlgorithmEngine } from './pose-algorithm';
+import { PoseAlgorithmEngine, SUPPORTED_EXERCISES } from './pose-algorithm';
 import { generateCoaching } from './coaching-engine';
 import { generateQuickCoaching, generateIdleCoaching, getExerciseName } from './coaching-templates';
 import { parseVoiceCommand, getVoiceCommandReply } from './voice-command';
@@ -22,6 +22,14 @@ const IDLE_THRESHOLD_MS = 10000;      // 空闲阈值 ~10秒没动
 
 const DOUBAO_COACH_URL = process.env.DOUBAO_VOICE_BOT_URL || 'https://320a02f4-5fad-4816-a1a8-37c1a4a92247.dev.coze.site/run';
 const COACH_MODE = process.env.COACH_MODE || 'hybrid'; // 'hybrid'(快速+深度) / 'doubao'(纯豆包) / 'legacy'(旧LLM+TTS)
+
+function normalizeExercise(exercise: string | undefined): string {
+  if (!exercise) return 'squat';
+  if ((SUPPORTED_EXERCISES as readonly string[]).includes(exercise)) return exercise;
+  if (exercise === 'pushup') return 'push_up';
+  if (exercise === 'high_knee') return 'high_knees';
+  return 'squat';
+}
 
 // SDK TTSClient
 let ttsClient: TTSClient | null = null;
@@ -69,9 +77,7 @@ export function handleCoachingConnection(ws: WebSocket): void {
     // 切换运动类型
     if (msg.type === 'set_exercise') {
       const raw = (msg.payload as { exercise: string }).exercise || 'squat';
-      // 'auto' 或未知类型暂用 squat，后续可实现自动识别
-      const supported = ['squat', 'push_up', 'plank', 'lunge', 'jumping_jack', 'high_knees', 'sit_up'];
-      currentExercise = supported.includes(raw) ? raw : 'squat';
+      currentExercise = normalizeExercise(raw);
       algorithm.reset();
       prevRepCount = 0;
       return;
@@ -108,10 +114,10 @@ export function handleCoachingConnection(ws: WebSocket): void {
 
         // 执行意图
         if (intent.action === 'switch_exercise') {
-          currentExercise = intent.exercise;
+          currentExercise = normalizeExercise(intent.exercise);
           algorithm.reset();
           prevRepCount = 0;
-          safeSend(ws, { type: 'set_exercise', payload: { exercise: intent.exercise } });
+          safeSend(ws, { type: 'set_exercise', payload: { exercise: currentExercise } });
         } else if (intent.action === 'reset') {
           algorithm.reset();
           prevRepCount = 0;
@@ -164,6 +170,12 @@ export function handleCoachingConnection(ws: WebSocket): void {
     if (msg.type === 'pose_frame') {
       const frame = msg.payload as PoseFrame;
       if (!frame.landmarks || frame.landmarks.length < 28) return;
+      const frameExercise = frame.exercise ? normalizeExercise(frame.exercise) : currentExercise;
+      if (frame.exercise && frameExercise !== currentExercise) {
+        currentExercise = frameExercise;
+        algorithm.reset();
+        prevRepCount = 0;
+      }
 
       lastActivityTime = Date.now();
 
@@ -284,7 +296,7 @@ export function handleCoachingConnection(ws: WebSocket): void {
     if (msg.type === 'pose_batch') {
       const batch = msg.payload as { frames: PoseFrame[]; exercise?: string };
       if (batch.exercise) {
-        currentExercise = batch.exercise;
+        currentExercise = normalizeExercise(batch.exercise);
       }
       for (const frame of batch.frames) {
         if (frame.landmarks && frame.landmarks.length >= 28) {

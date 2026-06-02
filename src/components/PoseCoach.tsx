@@ -29,11 +29,11 @@ const POSE_CONNECTIONS: Array<[number, number]> = [
 const EXERCISES = [
   { id: 'auto', label: '自动识别', icon: '🎯' },
   { id: 'squat', label: '深蹲', icon: '🏋' },
-  { id: 'pushup', label: '俯卧撑', icon: '💪' },
-  { id: 'deadlift', label: '硬拉', icon: '🔧' },
+  { id: 'push_up', label: '俯卧撑', icon: '💪' },
   { id: 'plank', label: '平板支撑', icon: '🧘' },
   { id: 'lunge', label: '弓步蹲', icon: '🦵' },
   { id: 'jumping_jack', label: '开合跳', icon: '⭐' },
+  { id: 'high_knees', label: '高抬腿', icon: '🏃' },
 ] as const;
 
 type ExerciseId = (typeof EXERCISES)[number]['id'];
@@ -175,7 +175,7 @@ export default function PoseCoach() {
                 reader.onload = () => {
                   const base64 = (reader.result as string).split(',')[1];
                   if (wsRef.current) {
-                    wsRef.current.send({ type: 'voice_command', payload: { audio: base64 } });
+                    wsRef.current.send({ type: 'voice_command', payload: { base64Data: base64 } });
                   }
                 };
                 reader.readAsDataURL(e.data);
@@ -440,8 +440,8 @@ export default function PoseCoach() {
   useEffect(() => {
     if (wsRef.current && source === 'remote') {
       wsRef.current.send({
-        type: 'set:exercise',
-        payload: { exercise: selectedExercise === 'auto' ? '' : selectedExercise },
+        type: 'set_exercise',
+        payload: { exercise: selectedExercise },
       });
     }
   }, [selectedExercise, source]);
@@ -454,16 +454,17 @@ export default function PoseCoach() {
       payload: {
         landmarks,
         timestamp: Date.now(),
+        exercise: selectedExercise,
       },
     });
-  }, []);
+  }, [selectedExercise]);
 
   // 定时发送运动类型（本地模式切换时通知服务端）
   useEffect(() => {
     if (!wsRef.current || source !== 'local') return;
     wsRef.current.send({
       type: 'set_exercise',
-      payload: { exercise: selectedExercise === 'auto' ? 'squat' : selectedExercise },
+      payload: { exercise: selectedExercise },
     });
   }, [selectedExercise, source]);
 
@@ -1003,7 +1004,7 @@ export default function PoseCoach() {
             <div className="space-y-1.5 max-h-24 overflow-y-auto">
               {voiceMessages.length === 0 ? (
                 <div className="text-[10px] text-[#8B8FA3]/50">
-                  试试说: "换深蹲"、"做了多少个"、"暂停"
+                  试试说: &ldquo;换深蹲&rdquo;、&ldquo;做了多少个&rdquo;、&ldquo;暂停&rdquo;
                 </div>
               ) : (
                 voiceMessages.slice(-4).map((msg, i) => (
