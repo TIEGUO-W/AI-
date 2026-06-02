@@ -9,15 +9,16 @@ export interface HealthMetricInput {
 }
 
 export interface RecoveryBreakdown {
-  recoveryIndex: number;
-  sleepScore: number;
-  hrvScore: number;
-  restingHrScore: number;
-  activityLoadScore: number;
-  sleepQuality: 'poor' | 'fair' | 'good';
-  loadLevel: 'low' | 'moderate' | 'high';
-  recommendation: 'recover' | 'moderate' | 'train';
+  recoveryIndex: number | null;
+  sleepScore: number | null;
+  hrvScore: number | null;
+  restingHrScore: number | null;
+  activityLoadScore: number | null;
+  sleepQuality: 'poor' | 'fair' | 'good' | null;
+  loadLevel: 'low' | 'moderate' | 'high' | null;
+  recommendation: 'recover' | 'moderate' | 'train' | null;
   hasAnyInput: boolean;
+  hasRecovery: boolean;
 }
 
 function clamp(value: number, min = 0, max = 100): number {
@@ -28,8 +29,8 @@ function round(value: number): number {
   return Math.round(value);
 }
 
-function scoreSleep(hours?: number | null): number {
-  if (typeof hours !== 'number') return 60;
+function scoreSleep(hours?: number | null): number | null {
+  if (typeof hours !== 'number') return null;
   if (hours < 4) return 25;
   if (hours < 6) return 45 + (hours - 4) * 10;
   if (hours <= 8) return 75 + (hours - 6) * 10;
@@ -37,24 +38,30 @@ function scoreSleep(hours?: number | null): number {
   return 85;
 }
 
-function scoreHrv(hrv?: number | null): number {
-  if (typeof hrv !== 'number') return 60;
+function scoreHrv(hrv?: number | null): number | null {
+  if (typeof hrv !== 'number') return null;
   return clamp((hrv / 60) * 100);
 }
 
-function scoreRestingHr(restingHeartRate?: number | null, currentHeartRate?: number | null): number {
-  const hr = typeof restingHeartRate === 'number' ? restingHeartRate : currentHeartRate;
-  if (typeof hr !== 'number') return 60;
+function scoreRestingHr(restingHeartRate?: number | null): number | null {
+  const hr = restingHeartRate;
+  if (typeof hr !== 'number') return null;
   if (hr <= 55) return 95;
   if (hr <= 70) return 90 - (hr - 55) * 1.2;
   if (hr <= 85) return 72 - (hr - 70) * 2;
   return clamp(40 - (hr - 85) * 1.5);
 }
 
-function scoreActivityLoad(steps?: number | null, activeEnergy?: number | null): number {
-  const stepLoad = typeof steps === 'number' ? clamp(steps / 12000 * 100) : 50;
-  const energyLoad = typeof activeEnergy === 'number' ? clamp(activeEnergy / 600 * 100) : 50;
-  const load = (stepLoad * 0.55) + (energyLoad * 0.45);
+function scoreActivityLoad(steps?: number | null, activeEnergy?: number | null): number | null {
+  const hasSteps = typeof steps === 'number';
+  const hasEnergy = typeof activeEnergy === 'number';
+  if (!hasSteps && !hasEnergy) return null;
+
+  const stepLoad = hasSteps ? clamp(steps / 12000 * 100) : null;
+  const energyLoad = hasEnergy ? clamp(activeEnergy / 600 * 100) : null;
+  const load = stepLoad !== null && energyLoad !== null
+    ? (stepLoad * 0.55) + (energyLoad * 0.45)
+    : stepLoad ?? energyLoad ?? 0;
   return clamp(100 - Math.max(0, load - 45) * 0.9);
 }
 
@@ -89,57 +96,64 @@ export function calculateRecovery(input: HealthMetricInput): RecoveryBreakdown {
 
   if (!hasAnyInput) {
     return {
-      recoveryIndex: 0,
-      sleepScore: 0,
-      hrvScore: 0,
-      restingHrScore: 0,
-      activityLoadScore: 0,
-      sleepQuality: 'poor',
-      loadLevel: 'moderate',
-      recommendation: 'recover',
+      recoveryIndex: null,
+      sleepScore: null,
+      hrvScore: null,
+      restingHrScore: null,
+      activityLoadScore: null,
+      sleepQuality: null,
+      loadLevel: null,
+      recommendation: null,
       hasAnyInput: false,
-    };
-  }
-
-  if (typeof input.recoveryIndex === 'number') {
-    const recoveryIndex = round(clamp(input.recoveryIndex));
-    const sleep = scoreSleep(input.sleepHours);
-    const hrv = scoreHrv(input.hrv);
-    const restingHr = scoreRestingHr(input.restingHeartRate, input.heartRate);
-    const activityLoad = scoreActivityLoad(input.steps, input.activeEnergy);
-    return {
-      recoveryIndex,
-      sleepScore: round(sleep),
-      hrvScore: round(hrv),
-      restingHrScore: round(restingHr),
-      activityLoadScore: round(activityLoad),
-      sleepQuality: sleepQuality(sleep),
-      loadLevel: loadLevel(activityLoad),
-      recommendation: recommendation(recoveryIndex),
-      hasAnyInput: true,
+      hasRecovery: false,
     };
   }
 
   const sleep = scoreSleep(input.sleepHours);
   const hrv = scoreHrv(input.hrv);
-  const restingHr = scoreRestingHr(input.restingHeartRate, input.heartRate);
+  const restingHr = scoreRestingHr(input.restingHeartRate);
   const activityLoad = scoreActivityLoad(input.steps, input.activeEnergy);
-  const recoveryIndex = round(clamp(
-    sleep * 0.35 +
-    hrv * 0.25 +
-    restingHr * 0.20 +
-    activityLoad * 0.20,
-  ));
+
+  if (typeof input.recoveryIndex === 'number') {
+    const recoveryIndex = round(clamp(input.recoveryIndex));
+    return {
+      recoveryIndex,
+      sleepScore: sleep === null ? null : round(sleep),
+      hrvScore: hrv === null ? null : round(hrv),
+      restingHrScore: restingHr === null ? null : round(restingHr),
+      activityLoadScore: activityLoad === null ? null : round(activityLoad),
+      sleepQuality: sleep === null ? null : sleepQuality(sleep),
+      loadLevel: activityLoad === null ? null : loadLevel(activityLoad),
+      recommendation: recommendation(recoveryIndex),
+      hasAnyInput: true,
+      hasRecovery: true,
+    };
+  }
+
+  const components = [
+    { score: sleep, weight: 0.35 },
+    { score: hrv, weight: 0.25 },
+    { score: restingHr, weight: 0.20 },
+    { score: activityLoad, weight: 0.20 },
+  ].filter((component): component is { score: number; weight: number } => component.score !== null);
+  const hasRecovery = components.length >= 2;
+  const recoveryIndex = hasRecovery
+    ? round(clamp(
+        components.reduce((sum, component) => sum + component.score * component.weight, 0) /
+        components.reduce((sum, component) => sum + component.weight, 0),
+      ))
+    : null;
 
   return {
     recoveryIndex,
-    sleepScore: round(sleep),
-    hrvScore: round(hrv),
-    restingHrScore: round(restingHr),
-    activityLoadScore: round(activityLoad),
-    sleepQuality: sleepQuality(sleep),
-    loadLevel: loadLevel(activityLoad),
-    recommendation: recommendation(recoveryIndex),
+    sleepScore: sleep === null ? null : round(sleep),
+    hrvScore: hrv === null ? null : round(hrv),
+    restingHrScore: restingHr === null ? null : round(restingHr),
+    activityLoadScore: activityLoad === null ? null : round(activityLoad),
+    sleepQuality: sleep === null ? null : sleepQuality(sleep),
+    loadLevel: activityLoad === null ? null : loadLevel(activityLoad),
+    recommendation: recoveryIndex === null ? null : recommendation(recoveryIndex),
     hasAnyInput: true,
+    hasRecovery,
   };
 }

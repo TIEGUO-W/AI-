@@ -34,6 +34,10 @@ const MP_VISION_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10
 
 type SourceMode = 'local' | 'remote';
 
+function numberOrUndefined(value: number | null | undefined): number | undefined {
+  return typeof value === 'number' ? value : undefined;
+}
+
 function getSkeletonColor(quality: 'good' | 'warning' | 'error'): string {
   switch (quality) {
     case 'good': return '#22D3A7';
@@ -48,6 +52,7 @@ interface WorkoutSnapshot {
 }
 
 interface SensorSnapshot {
+  sessionId?: string | null;
   heartRate?: number | null;
   steps?: number | null;
   activeEnergy?: number | null;
@@ -60,6 +65,23 @@ interface SensorSnapshot {
   humidity?: number | null;
   source?: 'apple_health' | 'manual';
   updatedAt: number | null;
+}
+
+function createHealthSessionId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return `health_${crypto.randomUUID()}`;
+  }
+  return `health_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getHealthSessionId(): string {
+  if (typeof window === 'undefined') return 'health_server';
+  const storageKey = 'pose_coach_health_session_id';
+  const existing = window.localStorage.getItem(storageKey);
+  if (existing) return existing;
+  const sessionId = createHealthSessionId();
+  window.localStorage.setItem(storageKey, sessionId);
+  return sessionId;
 }
 
 function normalizeExerciseForBackend(exercise: string): string {
@@ -80,6 +102,7 @@ export default function Dashboard() {
   const [planModalOpen, setPlanModalOpen] = useState(false);
   const [summaryModalOpen, setSummaryModalOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<WorkoutSnapshot | null>(null);
+  const [healthSessionId, setHealthSessionId] = useState('');
   const [durationSeconds, setDurationSeconds] = useState(0);
   const startTimeRef = useRef(Date.now());
 
@@ -113,6 +136,12 @@ export default function Dashboard() {
     ...mockData,
     workout: { ...mockData.workout, currentAction: '深蹲', targetReps: 20 },
   }));
+
+  useEffect(() => {
+    const sessionId = getHealthSessionId();
+    setHealthSessionId(sessionId);
+    sessionIdRef.current = sessionId;
+  }, []);
 
   // Speaking state for monster mouth animation
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -277,11 +306,16 @@ export default function Dashboard() {
 
   // ─── Apple Health / sensor bridge ─────────────────────────────
   useEffect(() => {
+    if (!healthSessionId) return;
     let cancelled = false;
 
     async function refreshSensors() {
       try {
-        const res = await fetch(`/api/sensor?t=${Date.now()}`, { cache: 'no-store' });
+        const params = new URLSearchParams({
+          sessionId: healthSessionId,
+          t: String(Date.now()),
+        });
+        const res = await fetch(`/api/sensor?${params.toString()}`, { cache: 'no-store' });
         if (!res.ok) return;
         const sensor = await res.json() as SensorSnapshot;
         if (cancelled || !sensor.updatedAt) return;
@@ -290,22 +324,24 @@ export default function Dashboard() {
           ...prev,
           biometrics: {
             ...prev.biometrics,
-            ...(typeof sensor.heartRate === 'number' ? { heartRate: Math.round(sensor.heartRate) } : {}),
+            heartRate: typeof sensor.heartRate === 'number'
+              ? Math.round(sensor.heartRate)
+              : prev.biometrics.heartRate,
             hasLiveHeartRate: typeof sensor.heartRate === 'number',
-            ...(typeof sensor.steps === 'number' ? { steps: Math.round(sensor.steps) } : {}),
-            ...(typeof sensor.activeEnergy === 'number' ? { activeEnergy: Math.round(sensor.activeEnergy) } : {}),
-            ...(typeof sensor.restingHeartRate === 'number' ? { restingHeartRate: Math.round(sensor.restingHeartRate) } : {}),
-            ...(typeof sensor.hrv === 'number' ? { hrv: Math.round(sensor.hrv) } : {}),
-            ...(typeof sensor.sleepHours === 'number' ? { sleepHours: Math.round(sensor.sleepHours * 10) / 10 } : {}),
-            ...(typeof sensor.recoveryIndex === 'number' ? { recoveryIndex: Math.round(sensor.recoveryIndex) } : {}),
-            ...(sensor.recoveryBreakdown ? { recoveryBreakdown: sensor.recoveryBreakdown } : {}),
+            steps: numberOrUndefined(sensor.steps),
+            activeEnergy: numberOrUndefined(sensor.activeEnergy),
+            restingHeartRate: numberOrUndefined(sensor.restingHeartRate),
+            hrv: numberOrUndefined(sensor.hrv),
+            sleepHours: typeof sensor.sleepHours === 'number' ? Math.round(sensor.sleepHours * 10) / 10 : undefined,
+            recoveryIndex: typeof sensor.recoveryIndex === 'number' ? Math.round(sensor.recoveryIndex) : undefined,
+            recoveryBreakdown: sensor.recoveryBreakdown,
             source: sensor.source ?? 'apple_health',
             updatedAt: sensor.updatedAt,
           },
           environment: {
             ...prev.environment,
-            ...(typeof sensor.temp === 'number' ? { temp: Math.round(sensor.temp * 10) / 10 } : {}),
-            ...(typeof sensor.humidity === 'number' ? { humidity: Math.round(sensor.humidity) } : {}),
+            temp: typeof sensor.temp === 'number' ? Math.round(sensor.temp * 10) / 10 : undefined,
+            humidity: typeof sensor.humidity === 'number' ? Math.round(sensor.humidity) : undefined,
             sensorUpdatedAt: sensor.updatedAt,
           },
         }));
@@ -320,7 +356,7 @@ export default function Dashboard() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, []);
+  }, [healthSessionId]);
 
   // ─── MediaPipe Pose (local mode) ─────────────────────
   useEffect(() => {
@@ -463,13 +499,14 @@ export default function Dashboard() {
           const now = Date.now();
           if (!lastFrameSentRef.current || now - lastFrameSentRef.current >= 100) {
             lastFrameSentRef.current = now;
-            wsRef.current?.send({
-              type: 'pose_frame',
-              payload: {
-                landmarks: wsLandmarks,
-                timestamp: now,
-              },
-            });
+              wsRef.current?.send({
+                type: 'pose_frame',
+                payload: {
+                  landmarks: wsLandmarks,
+                  timestamp: now,
+                  sessionId: sessionIdRef.current,
+                },
+              });
           }
         } else {
           setPoseDetected(false);
@@ -647,7 +684,6 @@ export default function Dashboard() {
 
   const handleStartWorkout = useCallback(() => {
     const backendExercise = normalizeExerciseForBackend(selectedExercise);
-    sessionIdRef.current = `session_${Date.now()}`;
     startTimeRef.current = Date.now();
     completedRef.current = false;
     setRepCount(0);
@@ -736,6 +772,7 @@ export default function Dashboard() {
         onClose={() => setPlanModalOpen(false)}
         personality={personality}
         biometrics={data.biometrics}
+        healthSessionId={healthSessionId}
       />
       {snapshot && (
         <WorkoutSummaryModal
