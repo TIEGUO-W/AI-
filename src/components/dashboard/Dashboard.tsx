@@ -554,6 +554,26 @@ export default function Dashboard() {
     };
   }, [voiceEnabled, isRunning]);
 
+  // ─── Demo heart rate fallback (disabled once Apple Health data arrives) ───
+  useEffect(() => {
+    if (!isRunning) return;
+    const interval = setInterval(() => {
+      setData(prev => {
+        if (prev.biometrics.updatedAt) return prev;
+        const baseHR = 75 + (isRunning ? 60 : 0);
+        const variance = Math.floor(Math.random() * 20) - 10;
+        return {
+          ...prev,
+          biometrics: {
+            ...prev.biometrics,
+            heartRate: Math.max(60, Math.min(190, baseHR + variance + repCount)),
+          },
+        };
+      });
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [isRunning, repCount]);
+
   // ─── Coach personality: fallback only when backend is silent ───
   const lastCoachMsgTimeRef = useRef(Date.now());
   useEffect(() => {

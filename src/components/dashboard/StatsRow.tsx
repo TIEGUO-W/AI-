@@ -14,13 +14,13 @@ interface StatsRowProps {
 const MUSIC_TRACKS = ['赛博电音', '热血燃曲', '禅意拉伸'] as const;
 
 export default function StatsRow({ workout, biometrics, onOpenPlanModal }: StatsRowProps) {
-  const hasHeartRate = biometrics.hasLiveHeartRate === true;
+  const hasHeartRate = biometrics.source === 'demo' || biometrics.hasLiveHeartRate !== false;
   const isHrHigh = hasHeartRate && biometrics.heartRate > biometrics.hrThreshold;
   const [musicTrack, setMusicTrack] = useState<string>(MUSIC_TRACKS[0]);
   const [musicOpen, setMusicOpen] = useState(false);
   const sourceLabel = biometrics.source === 'apple_health'
     ? 'Apple Health'
-    : biometrics.source === 'manual' ? 'Manual' : '未上传';
+    : biometrics.source === 'manual' ? 'Manual' : 'Demo';
 
   return (
     <div className="flex items-stretch gap-3 px-4 py-2">

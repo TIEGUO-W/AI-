@@ -91,7 +91,7 @@ export default function LeftPanel({
   coachMessage = '',
 }: LeftPanelProps) {
   const { assistant, biometrics, workout } = data;
-  const heartRateForIntensity = biometrics.hasLiveHeartRate === true ? biometrics.heartRate : 0;
+  const heartRateForIntensity = biometrics.hasLiveHeartRate === false ? 0 : biometrics.heartRate;
 
   const rawIntensity = computeIntensity(
     heartRateForIntensity,
@@ -246,7 +246,7 @@ export default function LeftPanel({
           &ldquo;{assistant.message}&rdquo;
         </p>
         <div className="mt-3 flex items-center gap-4 text-[11px] text-slate-500 font-mono">
-          <span>心率 {biometrics.hasLiveHeartRate === true ? biometrics.heartRate : '--'} BPM</span>
+          <span>心率 {biometrics.hasLiveHeartRate === false ? '--' : biometrics.heartRate} BPM</span>
           <span>分数 {workout.score}</span>
           <span>动作 {workout.currentAction}</span>
         </div>
