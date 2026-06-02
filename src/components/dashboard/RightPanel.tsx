@@ -10,6 +10,7 @@ interface RightPanelProps {
   environment: Environment;
   connectionError?: string | null;
   onOpenPlanModal: () => void;
+  onOpenHealthConnect: () => void;
   onEndWorkout: () => void;
   onStartWorkout: () => void;
   isRunning: boolean;
@@ -55,6 +56,7 @@ export default function RightPanel({
   environment,
   connectionError,
   onOpenPlanModal,
+  onOpenHealthConnect,
   onEndWorkout,
   onStartWorkout,
   isRunning,
@@ -108,6 +110,12 @@ export default function RightPanel({
             {typeof environment.temp === 'number' ? `${environment.temp}°C` : '环境未上传'}
             {typeof environment.humidity === 'number' ? ` · ${environment.humidity}% RH` : ''}
           </span>
+          <button
+            onClick={onOpenHealthConnect}
+            className="text-xs px-3 py-1 rounded-full border border-cyber-cyan/40 bg-cyber-cyan/10 text-cyber-cyan hover:bg-cyber-cyan/20 transition-all font-mono"
+          >
+            健康同步
+          </button>
           {/* Voice toggle */}
           <button
             onClick={onVoiceToggle}
