@@ -61,7 +61,7 @@ interface SensorSnapshot {
 }
 
 function normalizeExerciseForBackend(exercise: string): string {
-  return exercise === 'auto' ? 'squat' : exercise;
+  return exercise;
 }
 
 export default function Dashboard() {
@@ -465,6 +465,7 @@ export default function Dashboard() {
               payload: {
                 landmarks: wsLandmarks,
                 timestamp: now,
+                exercise: normalizeExerciseForBackend(selectedExercise),
               },
             });
           }

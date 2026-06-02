@@ -16,8 +16,7 @@ export type VoiceIntent =
 
 const EXERCISE_ALIASES: Record<string, string[]> = {
   squat: ['深蹲', '蹲', '下蹲', 'squats', 'squat'],
-  deadlift: ['硬拉', '拉', '提拉', 'deadlift'],
-  pushup: ['俯卧撑', '趴', '推', 'pushup', 'push up'],
+  push_up: ['俯卧撑', '趴', '推', 'pushup', 'push up'],
   lunge: ['弓步', '弓步蹲', '箭步', 'lunge'],
   plank: ['平板支撑', '支撑', 'plank', '平板'],
   high_knees: ['高抬腿', '抬腿', '原地跑', 'high knees'],
@@ -99,7 +98,7 @@ export function getVoiceCommandReply(
 
 function getExerciseNameCN(exercise: string): string {
   const names: Record<string, string> = {
-    squat: '深蹲', deadlift: '硬拉', pushup: '俯卧撑',
+    squat: '深蹲', push_up: '俯卧撑',
     lunge: '弓步蹲', plank: '平板支撑', high_knees: '高抬腿', jumping_jack: '开合跳',
   };
   return names[exercise] || exercise;

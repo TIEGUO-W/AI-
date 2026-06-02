@@ -18,6 +18,7 @@ export interface Landmark {
 export interface PoseFrame {
   landmarks: Landmark[];
   timestamp: number;
+  exercise?: string;
 }
 
 export interface PoseBatchPayload {

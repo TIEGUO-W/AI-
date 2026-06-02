@@ -45,6 +45,9 @@ export type ExerciseStage =
 
 export type FrontendEffect = 'perfect' | 'excellent' | 'good' | 'adjust' | 'warning' | null;
 
+export const SUPPORTED_EXERCISES = ['auto', 'squat', 'push_up', 'plank', 'lunge', 'jumping_jack', 'high_knees'] as const;
+export type SupportedExercise = typeof SUPPORTED_EXERCISES[number];
+
 export interface AlgorithmResult {
   exercise: string;
   stage: ExerciseStage;
@@ -236,8 +239,6 @@ export class PoseAlgorithmEngine {
   // ── 主入口 ──────────────────────────────
 
   analyze(landmarks: Landmark[], exercise: string): AlgorithmResult {
-    const st = this.state(exercise);
-
     // 1. 原始关节点
     const rawKps: Record<string, RawKP> = {};
     for (const [idx, name] of Object.entries(JOINT_MAP)) {
@@ -245,8 +246,15 @@ export class PoseAlgorithmEngine {
       if (lm) rawKps[name] = { x: lm.x, y: lm.y, confidence: lm.visibility ?? 0 };
     }
 
+    const requestedExercise = this.normalizeExercise(exercise);
+    const bootstrapState = this.state(requestedExercise === 'auto' ? 'squat' : requestedExercise);
+
     // 2. 骨架清洗
-    const cleaning = this.cleanPose(rawKps, st.previousKeypoints);
+    const cleaning = this.cleanPose(rawKps, bootstrapState.previousKeypoints);
+    const activeExercise = requestedExercise === 'auto'
+      ? this.inferExercise(cleaning)
+      : requestedExercise;
+    const st = this.state(activeExercise);
     if (!cleaning.abnormalFrame) {
       st.previousKeypoints = cleaning.keypoints;
     }
@@ -255,13 +263,13 @@ export class PoseAlgorithmEngine {
     const angles = this.calculateAngles(cleaning);
 
     // 4. 阶段识别
-    const { stage, primaryValue } = this.recognizeStage(exercise, angles, cleaning, st);
+    const { stage, primaryValue } = this.recognizeStage(activeExercise, angles, cleaning, st);
 
     // 5. 计数
-    const completedRep = this.updateCounter(exercise, stage, st);
+    const completedRep = this.updateCounter(activeExercise, stage, st);
 
     // 6. 质量评分
-    const quality = this.scoreQuality(exercise, cleaning, angles, stage, st);
+    const quality = this.scoreQuality(activeExercise, cleaning, angles, stage, st);
 
     // 7. 更新状态
     if (stage !== 'unknown') st.previousStage = stage;
@@ -275,11 +283,52 @@ export class PoseAlgorithmEngine {
     const effect = this.determineEffect(quality.qualityScore, completedRep, stage);
 
     // 9. 构建结果
-    const ctx = this.buildContext(exercise, stage, completedRep, cleaning, angles, quality, st.repCount);
+    const ctx = this.buildContext(activeExercise, stage, completedRep, cleaning, angles, quality, st.repCount);
     return {
-      exercise, stage, repCount: st.repCount, completedRep,
+      exercise: activeExercise, stage, repCount: st.repCount, completedRep,
       angles, quality, effect, algorithmContext: ctx,
     };
+  }
+
+  private normalizeExercise(exercise: string): SupportedExercise {
+    if ((SUPPORTED_EXERCISES as readonly string[]).includes(exercise)) {
+      return exercise as SupportedExercise;
+    }
+    if (exercise === 'pushup') return 'push_up';
+    if (exercise === 'high_knee') return 'high_knees';
+    return 'squat';
+  }
+
+  private inferExercise(cleaning: CleaningResult): Exclude<SupportedExercise, 'auto'> {
+    const angles = this.calculateAngles(cleaning);
+    const kp = cleaning.keypoints;
+    if (this.isPushUpPosition(cleaning, angles)) return 'push_up';
+
+    const bodyHorizontal = this.isBodyHorizontal(kp);
+    if (bodyHorizontal && angles.bodyLineAngle !== null && angles.bodyLineAngle <= 18) {
+      return 'plank';
+    }
+
+    const leftLift = verticalLift(kp.left_hip, kp.left_knee);
+    const rightLift = verticalLift(kp.right_hip, kp.right_knee);
+    if ((leftLift ?? 0) > 0.08 || (rightLift ?? 0) > 0.08) return 'high_knees';
+
+    const stance = angles.stanceWidth;
+    const sw = shoulderWidthKp(kp);
+    if (stance !== null && sw !== null) {
+      const stanceRatio = stance / Math.max(sw, 0.0001);
+      if (stanceRatio >= 1.45 && handsAboveShoulders(kp)) return 'jumping_jack';
+    }
+
+    const leftKnee = angles.leftKneeAngle;
+    const rightKnee = angles.rightKneeAngle;
+    const minKnee = minDefined(leftKnee, rightKnee);
+    const maxKnee = leftKnee !== null && rightKnee !== null ? Math.max(leftKnee, rightKnee) : null;
+    if (minKnee !== null && maxKnee !== null && minKnee < 125 && maxKnee - minKnee > 25) {
+      return 'lunge';
+    }
+
+    return 'squat';
   }
 
   // ── 骨架清洗（移植自 Python） ──────────
@@ -495,13 +544,12 @@ export class PoseAlgorithmEngine {
       if (knee < prevK - 3) dir = 'down';
       else if (knee > prevK + 3) dir = 'up';
     }
-    const hipMoving = prevK !== null && Math.abs(hip - (st.lastPrimaryDelta ?? 0)) > 2;
 
     const ps = st.previousStage;
     let ns: ExerciseStage = ps;
 
     if (ps === 'standing' || ps === 'unknown') {
-      if (knee < desc && hipMoving && dir === 'down') ns = 'descending';
+      if (knee < desc && dir === 'down') ns = 'descending';
     } else if (ps === 'descending') {
       if (knee < bot) ns = 'bottom';
       else if (knee > stand) ns = 'standing';
@@ -753,6 +801,15 @@ export class PoseAlgorithmEngine {
     return hip.y > lineY + Math.max(0.05, Math.abs(ankle.y - shoulder.y) * 0.25);
   }
 
+  private isBodyHorizontal(kp: Record<string, CleanKP>): boolean {
+    const shoulder = midKP(kp, 'shoulder');
+    const ankle = midKP(kp, 'ankle');
+    if (!isValid(shoulder) || !isValid(ankle)) return false;
+    const dx = Math.abs(shoulder.x - ankle.x);
+    const dy = Math.abs(shoulder.y - ankle.y);
+    return dx > 0.18 && dy / Math.max(dx, 0.0001) <= 0.75;
+  }
+
   private isPushUpPosition(cleaning: CleaningResult, angles: JointAngles): boolean {
     const kp = cleaning.keypoints;
     const shoulder = midKP(kp, 'shoulder');
@@ -767,7 +824,7 @@ export class PoseAlgorithmEngine {
     if (bodySpan < 0.25) return false;
 
     // 站立时身体主轴接近竖直；俯卧撑侧视时肩-踝主轴应明显更接近水平。
-    const horizontalEnough = bodyDx > 0.18 && bodyDy / Math.max(bodyDx, 0.0001) <= 0.75;
+    const horizontalEnough = this.isBodyHorizontal(kp);
     const straightEnough = angles.bodyLineAngle !== null && angles.bodyLineAngle <= 28;
 
     const visibleWrists = [kp.left_wrist, kp.right_wrist].filter(isValid);
