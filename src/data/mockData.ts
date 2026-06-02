@@ -7,8 +7,6 @@ const initialScore = 85;
 
 export const mockData: DashboardData = {
   environment: {
-    temp: 26,
-    humidity: 60,
     aiActive: true,
     connectionStatus: 'disconnected',
     sensorUpdatedAt: null,
