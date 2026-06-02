@@ -4,7 +4,6 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import LeftPanel from './LeftPanel';
 import RightPanel, { EXERCISE_LABELS } from './RightPanel';
 import CustomPlanModal from './CustomPlanModal';
-import HealthConnectModal from './HealthConnectModal';
 import WorkoutSummaryModal from './WorkoutSummaryModal';
 import type { DashboardData, CoachPersonality, CoachVoice, Workout, Biometrics } from '@/types/dashboard';
 import { mockData } from '@/data/mockData';
@@ -102,7 +101,6 @@ export default function Dashboard() {
   const [voice, setVoice] = useState<CoachVoice>('female_soft');
   const [planModalOpen, setPlanModalOpen] = useState(false);
   const [summaryModalOpen, setSummaryModalOpen] = useState(false);
-  const [healthConnectOpen, setHealthConnectOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<WorkoutSnapshot | null>(null);
   const [healthSessionId, setHealthSessionId] = useState('');
   const [durationSeconds, setDurationSeconds] = useState(0);
@@ -143,7 +141,6 @@ export default function Dashboard() {
     const sessionId = getHealthSessionId();
     setHealthSessionId(sessionId);
     sessionIdRef.current = sessionId;
-    setHealthConnectOpen(true);
   }, []);
 
   // Speaking state for monster mouth animation
@@ -752,7 +749,6 @@ export default function Dashboard() {
           environment={environment}
           connectionError={loadError || undefined}
           onOpenPlanModal={() => setPlanModalOpen(true)}
-          onOpenHealthConnect={() => setHealthConnectOpen(true)}
           onEndWorkout={handleEndWorkout}
           onStartWorkout={handleStartWorkout}
           isRunning={isRunning}
@@ -777,11 +773,6 @@ export default function Dashboard() {
         personality={personality}
         biometrics={data.biometrics}
         healthSessionId={healthSessionId}
-      />
-      <HealthConnectModal
-        open={healthConnectOpen && Boolean(healthSessionId)}
-        onClose={() => setHealthConnectOpen(false)}
-        sessionId={healthSessionId}
       />
       {snapshot && (
         <WorkoutSummaryModal
