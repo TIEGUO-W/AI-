@@ -9,6 +9,7 @@ import type { DashboardData, CoachPersonality, CoachVoice, Workout, Biometrics }
 import { mockData } from '@/data/mockData';
 import { getCoachMessage } from '@/utils/coachVoice';
 import { triggerHighScore, triggerLowScore, triggerWorkoutComplete } from '@/utils/confettiEffects';
+import type { RecoveryBreakdown } from '@/lib/health-metrics';
 import {
   createWsConnection,
   type WsMessage,
@@ -54,6 +55,7 @@ interface SensorSnapshot {
   hrv?: number | null;
   sleepHours?: number | null;
   recoveryIndex?: number | null;
+  recoveryBreakdown?: RecoveryBreakdown;
   temp?: number | null;
   humidity?: number | null;
   source?: 'apple_health' | 'manual';
@@ -296,6 +298,7 @@ export default function Dashboard() {
             ...(typeof sensor.hrv === 'number' ? { hrv: Math.round(sensor.hrv) } : {}),
             ...(typeof sensor.sleepHours === 'number' ? { sleepHours: Math.round(sensor.sleepHours * 10) / 10 } : {}),
             ...(typeof sensor.recoveryIndex === 'number' ? { recoveryIndex: Math.round(sensor.recoveryIndex) } : {}),
+            ...(sensor.recoveryBreakdown ? { recoveryBreakdown: sensor.recoveryBreakdown } : {}),
             source: sensor.source ?? 'apple_health',
             updatedAt: sensor.updatedAt,
           },

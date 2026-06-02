@@ -1,3 +1,5 @@
+import type { RecoveryBreakdown } from '@/lib/health-metrics';
+
 export type CoachPersonality = 'strict' | 'gentle' | 'toxic' | 'energetic';
 export type CoachVoice = 'female_soft' | 'male_energetic' | 'male_strict' | 'anime_fire';
 
@@ -27,6 +29,7 @@ export interface Biometrics {
   hrv?: number;
   sleepHours?: number;
   recoveryIndex?: number;
+  recoveryBreakdown?: RecoveryBreakdown;
   source?: 'demo' | 'apple_health' | 'manual';
   updatedAt?: number | null;
 }
