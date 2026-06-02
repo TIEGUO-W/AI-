@@ -104,6 +104,10 @@ export default function RightPanel({
           </span>
         </div>
         <div className="flex items-center gap-3">
+          <span className="text-[10px] font-mono text-slate-500">
+            {environment.temp}°C
+            {typeof environment.humidity === 'number' ? ` · ${environment.humidity}% RH` : ''}
+          </span>
           {/* Voice toggle */}
           <button
             onClick={onVoiceToggle}

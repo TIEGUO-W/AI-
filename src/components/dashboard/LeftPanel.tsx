@@ -71,8 +71,15 @@ const TALK_MAX_MS = 4500;
 const PERSONALITIES: CoachPersonality[] = ['gentle', 'strict', 'toxic', 'energetic'];
 const VOICES: CoachVoice[] = ['female_soft', 'male_energetic', 'male_strict', 'anime_fire'];
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type SplineApp = any;
+interface SplineObject {
+  name: string;
+  scale: { x: number; y: number; z: number };
+}
+
+interface SplineApp {
+  getAllObjects: () => SplineObject[];
+  requestRender: () => void;
+}
 
 export default function LeftPanel({
   data,
@@ -154,21 +161,20 @@ export default function LeftPanel({
     [stopTalking],
   );
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const handleSplineLoad = useCallback((app: any) => {
+  const handleSplineLoad = useCallback((app: SplineApp) => {
     stopTalking();
     splineAppRef.current = app;
     // Try multiple common mouth object names
-    const allObjects = (app as any).getAllObjects();
+    const allObjects = app.getAllObjects();
     const mouth = allObjects.find(
-      (o: any) => ['mouth', 'mouth_object', 'Mouth', 'jaw', 'Jaw'].includes(o.name),
+      (o) => ['mouth', 'mouth_object', 'Mouth', 'jaw', 'Jaw'].includes(o.name),
     );
     if (mouth) {
       console.log('[Spline] Found mouth object:', mouth.name);
       mouthRef.current = mouth.scale;
       originalMouthScaleRef.current = { x: mouth.scale.x, y: mouth.scale.y, z: mouth.scale.z };
     } else {
-      console.warn('[Spline] No mouth object found. Available objects:', allObjects.map((o: any) => o.name).join(', '));
+      console.warn('[Spline] No mouth object found. Available objects:', allObjects.map((o) => o.name).join(', '));
       mouthRef.current = null;
       originalMouthScaleRef.current = null;
     }

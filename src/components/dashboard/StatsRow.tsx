@@ -17,6 +17,9 @@ export default function StatsRow({ workout, biometrics, onOpenPlanModal }: Stats
   const isHrHigh = biometrics.heartRate > biometrics.hrThreshold;
   const [musicTrack, setMusicTrack] = useState<string>(MUSIC_TRACKS[0]);
   const [musicOpen, setMusicOpen] = useState(false);
+  const sourceLabel = biometrics.source === 'apple_health'
+    ? 'Apple Health'
+    : biometrics.source === 'manual' ? 'Manual' : 'Demo';
 
   return (
     <div className="flex items-stretch gap-3 px-4 py-2">
@@ -103,6 +106,9 @@ export default function StatsRow({ workout, biometrics, onOpenPlanModal }: Stats
             {biometrics.heartRate}
           </span>
           <span className="text-[10px] text-slate-400 font-mono">BPM</span>
+        </div>
+        <div className="mt-1 text-[9px] text-slate-500 font-mono">
+          {sourceLabel}{typeof biometrics.steps === 'number' ? ` · ${biometrics.steps} steps` : ''}
         </div>
       </div>
 

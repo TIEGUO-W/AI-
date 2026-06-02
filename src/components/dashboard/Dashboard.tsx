@@ -46,6 +46,20 @@ interface WorkoutSnapshot {
   biometrics: Biometrics;
 }
 
+interface SensorSnapshot {
+  heartRate?: number;
+  steps?: number;
+  activeEnergy?: number;
+  restingHeartRate?: number;
+  hrv?: number;
+  sleepHours?: number;
+  recoveryIndex?: number;
+  temp?: number;
+  humidity?: number;
+  source?: 'apple_health' | 'manual';
+  updatedAt: number | null;
+}
+
 export default function Dashboard() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -207,15 +221,17 @@ export default function Dashboard() {
       }
       case 'voice_recognized': {
         const p = msg.payload as { text?: string };
-        if (p.text) {
-          setVoiceMessages(prev => [...prev.slice(-9), { from: 'user', text: p.text }]);
+        const text = p.text;
+        if (text) {
+          setVoiceMessages(prev => [...prev.slice(-9), { from: 'user', text }]);
         }
         break;
       }
       case 'voice_reply': {
         const p = msg.payload as { text?: string };
-        if (p.text) {
-          setVoiceMessages(prev => [...prev.slice(-9), { from: 'coach', text: p.text }]);
+        const text = p.text;
+        if (text) {
+          setVoiceMessages(prev => [...prev.slice(-9), { from: 'coach', text }]);
         }
         break;
       }
@@ -252,6 +268,51 @@ export default function Dashboard() {
     wsRef.current = ws;
     return () => { ws.close(); };
   }, [handleWsMessage]);
+
+  // ─── Apple Health / sensor bridge ─────────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+
+    async function refreshSensors() {
+      try {
+        const res = await fetch('/api/sensor', { cache: 'no-store' });
+        if (!res.ok) return;
+        const sensor = await res.json() as SensorSnapshot;
+        if (cancelled || !sensor.updatedAt) return;
+
+        setData(prev => ({
+          ...prev,
+          biometrics: {
+            ...prev.biometrics,
+            ...(typeof sensor.heartRate === 'number' ? { heartRate: Math.round(sensor.heartRate) } : {}),
+            ...(typeof sensor.steps === 'number' ? { steps: Math.round(sensor.steps) } : {}),
+            ...(typeof sensor.activeEnergy === 'number' ? { activeEnergy: Math.round(sensor.activeEnergy) } : {}),
+            ...(typeof sensor.restingHeartRate === 'number' ? { restingHeartRate: Math.round(sensor.restingHeartRate) } : {}),
+            ...(typeof sensor.hrv === 'number' ? { hrv: Math.round(sensor.hrv) } : {}),
+            ...(typeof sensor.sleepHours === 'number' ? { sleepHours: Math.round(sensor.sleepHours * 10) / 10 } : {}),
+            ...(typeof sensor.recoveryIndex === 'number' ? { recoveryIndex: Math.round(sensor.recoveryIndex) } : {}),
+            source: sensor.source ?? 'apple_health',
+            updatedAt: sensor.updatedAt,
+          },
+          environment: {
+            ...prev.environment,
+            ...(typeof sensor.temp === 'number' ? { temp: Math.round(sensor.temp * 10) / 10 } : {}),
+            ...(typeof sensor.humidity === 'number' ? { humidity: Math.round(sensor.humidity) } : {}),
+            sensorUpdatedAt: sensor.updatedAt,
+          },
+        }));
+      } catch (err) {
+        console.warn('[sensor] refresh failed:', err);
+      }
+    }
+
+    refreshSensors();
+    const timer = setInterval(refreshSensors, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
 
   // ─── MediaPipe Pose (local mode) ─────────────────────
   useEffect(() => {
@@ -485,11 +546,12 @@ export default function Dashboard() {
     };
   }, [voiceEnabled, isRunning]);
 
-  // ─── Simulated heart rate (until real HR available) ───
+  // ─── Demo heart rate fallback (disabled once Apple Health data arrives) ───
   useEffect(() => {
     if (!isRunning) return;
     const interval = setInterval(() => {
       setData(prev => {
+        if (prev.biometrics.updatedAt) return prev;
         const baseHR = 75 + (isRunning ? 60 : 0);
         const variance = Math.floor(Math.random() * 20) - 10;
         return {
@@ -601,7 +663,7 @@ export default function Dashboard() {
   }, []);
 
   const environment = {
-    temp: 26,
+    ...data.environment,
     aiActive: wsConnected,
     connectionStatus: wsConnected ? 'connected' as const : 'disconnected' as const,
   };
@@ -654,6 +716,7 @@ export default function Dashboard() {
         open={planModalOpen}
         onClose={() => setPlanModalOpen(false)}
         personality={personality}
+        biometrics={data.biometrics}
       />
       {snapshot && (
         <WorkoutSummaryModal

@@ -8,8 +8,10 @@ const initialScore = 85;
 export const mockData: DashboardData = {
   environment: {
     temp: 26,
+    humidity: 60,
     aiActive: true,
     connectionStatus: 'disconnected',
+    sensorUpdatedAt: null,
   },
   workout: {
     currentAction: initialAction,
@@ -21,6 +23,8 @@ export const mockData: DashboardData = {
   biometrics: {
     heartRate: initialHR,
     hrThreshold: 160,
+    source: 'demo',
+    updatedAt: null,
   },
   assistant: {
     ...getCoachMessage(initialHR, initialScore, initialAction, false),

@@ -1003,7 +1003,7 @@ export default function PoseCoach() {
             <div className="space-y-1.5 max-h-24 overflow-y-auto">
               {voiceMessages.length === 0 ? (
                 <div className="text-[10px] text-[#8B8FA3]/50">
-                  试试说: "换深蹲"、"做了多少个"、"暂停"
+                  试试说: &ldquo;换深蹲&rdquo;、&ldquo;做了多少个&rdquo;、&ldquo;暂停&rdquo;
                 </div>
               ) : (
                 voiceMessages.slice(-4).map((msg, i) => (

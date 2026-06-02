@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { CoachPersonality } from '@/types/dashboard';
+import type { Biometrics, CoachPersonality } from '@/types/dashboard';
 import { PERSONALITY_LABELS, PERSONALITY_EMOJI } from '@/utils/coachVoice';
 
 interface CustomPlanModalProps {
   open: boolean;
   onClose: () => void;
   personality: CoachPersonality;
+  biometrics: Biometrics;
 }
 
 type Step = 'syncing' | 'metrics' | 'plan';
@@ -28,10 +29,19 @@ const SLEEP_ADVICE: Record<string, string> = {
 
 const DEMO_DATA_LABEL = '演示数据';
 
-export default function CustomPlanModal({ open, onClose, personality }: CustomPlanModalProps) {
+export default function CustomPlanModal({ open, onClose, personality, biometrics }: CustomPlanModalProps) {
   const [step, setStep] = useState<Step>('syncing');
   const [syncProgress, setSyncProgress] = useState(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const metrics = {
+    sleepHours: biometrics.sleepHours ?? MOCK_METRICS.sleepHours,
+    sleepQuality: (biometrics.sleepHours ?? MOCK_METRICS.sleepHours) < 6 ? 'poor' as const : 'fair' as const,
+    restingHR: biometrics.restingHeartRate ?? biometrics.heartRate ?? MOCK_METRICS.restingHR,
+    hrv: biometrics.hrv ?? MOCK_METRICS.hrv,
+    recoveryIndex: biometrics.recoveryIndex ?? MOCK_METRICS.recoveryIndex,
+    lastWorkout: MOCK_METRICS.lastWorkout,
+    sourceLabel: biometrics.source === 'apple_health' ? 'Apple Health' : DEMO_DATA_LABEL,
+  };
 
   // Reset and start flow when opened
   useEffect(() => {
@@ -148,10 +158,10 @@ export default function CustomPlanModal({ open, onClose, personality }: CustomPl
                     <span className="text-[11px] text-slate-400 font-mono">{label}</span>
                     {syncProgress > i * 18 + 10 ? (
                       <span className="text-[11px] text-cyber-cyan font-mono tabular-nums">
-                        {label === '心率变异性 (HRV)' ? '34 ms' :
-                         label === '静息心率' ? '62 BPM' :
-                         label === '睡眠分析' ? '5.2 h' :
-                         label === '运动负荷' ? '中' : '45%'}
+                        {label === '心率变异性 (HRV)' ? `${metrics.hrv} ms` :
+                         label === '静息心率' ? `${metrics.restingHR} BPM` :
+                         label === '睡眠分析' ? `${metrics.sleepHours} h` :
+                         label === '运动负荷' ? '中' : `${metrics.recoveryIndex}%`}
                       </span>
                     ) : (
                       <span className="inline-block w-12 h-3 rounded bg-slate-700/60 animate-pulse" />
@@ -175,11 +185,11 @@ export default function CustomPlanModal({ open, onClose, personality }: CustomPl
                   <span className="text-base">😴</span>
                   <div>
                     <p className="text-xs text-slate-300 font-medium">昨晚睡眠</p>
-                    <p className="text-[10px] text-orange-400/70 font-mono">{SLEEP_ADVICE.poor}</p>
+                    <p className="text-[10px] text-orange-400/70 font-mono">{SLEEP_ADVICE[metrics.sleepQuality]}</p>
                   </div>
                 </div>
                 <span className="text-lg font-bold text-orange-400 font-mono tabular-nums">
-                  {MOCK_METRICS.sleepHours}<span className="text-xs font-normal text-orange-400/60"> h</span>
+                  {metrics.sleepHours}<span className="text-xs font-normal text-orange-400/60"> h</span>
                 </span>
               </div>
 
@@ -193,7 +203,7 @@ export default function CustomPlanModal({ open, onClose, personality }: CustomPl
                   </div>
                 </div>
                 <span className="text-lg font-bold text-cyber-cyan font-mono tabular-nums">
-                  {MOCK_METRICS.restingHR}<span className="text-xs font-normal text-cyber-cyan/60"> BPM</span>
+                  {metrics.restingHR}<span className="text-xs font-normal text-cyber-cyan/60"> BPM</span>
                 </span>
               </div>
 
@@ -207,7 +217,7 @@ export default function CustomPlanModal({ open, onClose, personality }: CustomPl
                   </div>
                 </div>
                 <span className="text-lg font-bold text-red-400 font-mono tabular-nums">
-                  {MOCK_METRICS.recoveryIndex}<span className="text-xs font-normal text-red-400/60">%</span>
+                  {metrics.recoveryIndex}<span className="text-xs font-normal text-red-400/60">%</span>
                 </span>
               </div>
 
@@ -231,8 +241,8 @@ export default function CustomPlanModal({ open, onClose, personality }: CustomPl
                   </span>
                 </div>
                 <p className="text-sm text-slate-200 leading-relaxed">
-                  检测到你昨晚睡眠仅 <span className="text-orange-400 font-semibold">{MOCK_METRICS.sleepHours} 小时</span>（低于 6h 警戒线），
-                  身体恢复指数仅 <span className="text-red-400 font-semibold">{MOCK_METRICS.recoveryIndex}%</span>。
+                  检测到你昨晚睡眠 <span className="text-orange-400 font-semibold">{metrics.sleepHours} 小时</span>，
+                  身体恢复指数 <span className="text-red-400 font-semibold">{metrics.recoveryIndex}%</span>。
                   今日<span className="text-cyber-cyan font-semibold">不宜冲击极限</span>，以恢复性训练为主！
                 </p>
               </div>
@@ -266,7 +276,7 @@ export default function CustomPlanModal({ open, onClose, personality }: CustomPl
 
               {/* Disclaimer */}
               <p className="text-[10px] text-slate-600 font-mono text-center">
-                基于演示健康数据分析 · 实际计划请咨询专业教练
+                基于{metrics.sourceLabel}数据分析 · 实际计划请咨询专业教练
               </p>
             </div>
           )}
@@ -278,7 +288,7 @@ export default function CustomPlanModal({ open, onClose, personality }: CustomPl
             {step === 'syncing'
               ? `${DEMO_DATA_LABEL} · 未接入 HealthKit`
               : step === 'metrics'
-                ? `数据来源：${DEMO_DATA_LABEL}`
+                ? `数据来源：${metrics.sourceLabel}`
                 : `🎯 ${PERSONALITY_LABELS[personality]} 生成`}
           </span>
           {step === 'plan' && (
