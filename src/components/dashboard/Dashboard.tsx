@@ -60,6 +60,10 @@ interface SensorSnapshot {
   updatedAt: number | null;
 }
 
+function normalizeExerciseForBackend(exercise: string): string {
+  return exercise === 'auto' ? 'squat' : exercise;
+}
+
 export default function Dashboard() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -631,7 +635,34 @@ export default function Dashboard() {
   }, [data.workout.reps, data.workout.targetReps, data]);
 
   // ─── Handlers ────────────────────────────────────────
+  const handleExerciseChange = useCallback((exercise: string) => {
+    const backendExercise = normalizeExerciseForBackend(exercise);
+    setSelectedExercise(exercise);
+    setRepCount(0);
+    completedRef.current = false;
+    setData(prev => ({
+      ...prev,
+      workout: {
+        ...prev.workout,
+        currentAction: EXERCISE_LABELS[exercise] || EXERCISE_LABELS[backendExercise] || exercise,
+        reps: 0,
+        score: mockData.workout.score,
+        isFormDeformed: false,
+      },
+      assistant: {
+        ...prev.assistant,
+        message: `已切换到${EXERCISE_LABELS[exercise] || EXERCISE_LABELS[backendExercise] || exercise}`,
+        isAlert: false,
+      },
+    }));
+    wsRef.current?.send({
+      type: 'set_exercise',
+      payload: { exercise: backendExercise },
+    });
+  }, []);
+
   const handleStartWorkout = useCallback(() => {
+    const backendExercise = normalizeExerciseForBackend(selectedExercise);
     sessionIdRef.current = `session_${Date.now()}`;
     startTimeRef.current = Date.now();
     completedRef.current = false;
@@ -639,11 +670,15 @@ export default function Dashboard() {
     setIsRunning(true);
     setData(prev => ({
       ...prev,
-      workout: { ...prev.workout, reps: 0 },
+      workout: {
+        ...prev.workout,
+        currentAction: EXERCISE_LABELS[selectedExercise] || EXERCISE_LABELS[backendExercise] || selectedExercise,
+        reps: 0,
+      },
     }));
     wsRef.current?.send({
       type: 'set_exercise',
-      payload: { exercise: selectedExercise },
+      payload: { exercise: backendExercise },
     });
   }, [selectedExercise]);
 
@@ -701,7 +736,7 @@ export default function Dashboard() {
           canvasRef={canvasRef}
           remoteImageUrl={remoteImageUrl}
           selectedExercise={selectedExercise}
-          onExerciseChange={setSelectedExercise}
+          onExerciseChange={handleExerciseChange}
           sourceMode={source}
           onSourceModeChange={setSource}
           voiceEnabled={voiceEnabled}
