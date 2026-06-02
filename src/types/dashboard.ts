@@ -4,7 +4,7 @@ export type CoachPersonality = 'strict' | 'gentle' | 'toxic' | 'energetic';
 export type CoachVoice = 'female_soft' | 'male_energetic' | 'male_strict' | 'anime_fire';
 
 export interface Environment {
-  temp?: number;
+  temp: number;
   humidity?: number;
   aiActive: boolean;
   connectionStatus: 'connecting' | 'connected' | 'disconnected';

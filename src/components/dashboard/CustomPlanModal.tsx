@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Biometrics, CoachPersonality } from '@/types/dashboard';
 import { PERSONALITY_LABELS, PERSONALITY_EMOJI } from '@/utils/coachVoice';
 import { calculateRecovery } from '@/lib/health-metrics';
@@ -8,7 +8,6 @@ interface CustomPlanModalProps {
   onClose: () => void;
   personality: CoachPersonality;
   biometrics: Biometrics;
-  healthSessionId: string;
 }
 
 type Step = 'syncing' | 'metrics' | 'plan';
@@ -51,29 +50,18 @@ const RECOVERY_ADVICE = {
 
 const NO_DATA_LABEL = '未上传';
 const MISSING = '--';
-const HEALTH_SHORTCUT_URL =
-  process.env.NEXT_PUBLIC_HEALTH_SHORTCUT_URL ||
-  'https://www.icloud.com/shortcuts/dfbd7fc9cf984585a5da6bf637fe923e';
 
 function fmt(value: number | undefined | null, unit = ''): string {
   return typeof value === 'number' ? `${value}${unit}` : MISSING;
 }
 
-export default function CustomPlanModal({ open, onClose, personality, biometrics, healthSessionId }: CustomPlanModalProps) {
+export default function CustomPlanModal({ open, onClose, personality, biometrics }: CustomPlanModalProps) {
   const [step, setStep] = useState<Step>('syncing');
   const [syncProgress, setSyncProgress] = useState(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const uploadPath = healthSessionId
-    ? `/api/sensor?sessionId=${encodeURIComponent(healthSessionId)}`
-    : '/api/sensor?sessionId=';
-  const uploadUrl = useMemo(() => {
-    if (typeof window === 'undefined') return uploadPath;
-    return `${window.location.protocol}//${window.location.host}${uploadPath}`;
-  }, [uploadPath]);
   const recovery = biometrics.recoveryBreakdown ?? calculateRecovery(biometrics);
-  const recommendationKey = recovery.recommendation;
-  const hasRecovery = recovery.hasRecovery && typeof recovery.recoveryIndex === 'number' && recommendationKey !== null;
-  const recoveryAdvice = recommendationKey !== null ? RECOVERY_ADVICE[recommendationKey] : null;
+  const recoveryAdvice = RECOVERY_ADVICE[recovery.recommendation];
+  const hasRecovery = recovery.hasAnyInput;
   const metrics = {
     sleepHours: biometrics.sleepHours,
     sleepQuality: recovery.sleepQuality,
@@ -184,30 +172,11 @@ export default function CustomPlanModal({ open, onClose, personality, biometrics
                 正在读取健康数据
               </p>
               <p className="text-[11px] text-slate-500 font-mono">
-                当前健康会话：{healthSessionId || '生成中'}
+                Syncing Apple Health Data...
               </p>
 
-                <div className="mt-4 w-full rounded-lg border border-slate-700/40 bg-slate-800/40 p-3">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <p className="text-[10px] text-slate-500 font-mono">一键安装采集快捷指令</p>
-                    <a
-                      href={HEALTH_SHORTCUT_URL}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="rounded-full border border-cyber-cyan/40 px-2 py-0.5 text-[10px] text-cyber-cyan hover:bg-cyber-cyan/10"
-                    >
-                      iCloud
-                    </a>
-                  </div>
-                  <p className="text-[10px] text-slate-500 font-mono mb-1">个人上传地址</p>
-                  <p className="text-[11px] text-cyber-cyan font-mono break-all">{uploadUrl}</p>
-                  <p className="mt-2 text-[10px] text-slate-500 font-mono break-all">
-                    快捷指令请求体必须带这个 sessionId：{healthSessionId || '--'}
-                  </p>
-                </div>
-
               {/* Pulsing data lines */}
-              <div className="mt-3 w-full space-y-2">
+              <div className="mt-5 w-full space-y-2">
                 {['心率变异性 (HRV)', '静息心率', '睡眠分析', '运动负荷', '恢复指数'].map((label, i) => (
                   <div
                     key={label}
@@ -220,7 +189,7 @@ export default function CustomPlanModal({ open, onClose, personality, biometrics
                         {label === '心率变异性 (HRV)' ? fmt(metrics.hrv, ' ms') :
                          label === '静息心率' ? fmt(metrics.restingHR, ' BPM') :
                          label === '睡眠分析' ? fmt(metrics.sleepHours, ' h') :
-                         label === '运动负荷' ? (recovery.loadLevel ?? MISSING) : (hasRecovery ? `${metrics.recoveryIndex}%` : MISSING)}
+                         label === '运动负荷' ? (hasRecovery ? recovery.loadLevel : MISSING) : (hasRecovery ? `${metrics.recoveryIndex}%` : MISSING)}
                       </span>
                     ) : (
                       <span className="inline-block w-12 h-3 rounded bg-slate-700/60 animate-pulse" />
@@ -245,7 +214,7 @@ export default function CustomPlanModal({ open, onClose, personality, biometrics
                   <div>
                     <p className="text-xs text-slate-300 font-medium">昨晚睡眠</p>
                     <p className="text-[10px] text-orange-400/70 font-mono">
-                      {typeof metrics.sleepHours === 'number' && metrics.sleepQuality ? SLEEP_ADVICE[metrics.sleepQuality] : '未上传睡眠数据'}
+                      {typeof metrics.sleepHours === 'number' ? SLEEP_ADVICE[metrics.sleepQuality] : '未上传睡眠数据'}
                     </p>
                   </div>
                 </div>
@@ -277,9 +246,7 @@ export default function CustomPlanModal({ open, onClose, personality, biometrics
                   <div>
                     <p className="text-xs text-slate-300 font-medium">身体恢复指数</p>
                     <p className="text-[10px] text-red-400/70 font-mono">
-                      {hasRecovery && recoveryAdvice
-                        ? `${recoveryAdvice.label} · 睡眠${fmt(recovery.sleepScore)}/HRV${fmt(recovery.hrvScore)}/负荷${fmt(recovery.activityLoadScore)}`
-                        : '未上传足够健康数据'}
+                      {hasRecovery ? `${recoveryAdvice.label} · 睡眠${recovery.sleepScore}/HRV${recovery.hrvScore}/负荷${recovery.activityLoadScore}` : '未上传足够健康数据'}
                     </p>
                   </div>
                 </div>
@@ -310,13 +277,13 @@ export default function CustomPlanModal({ open, onClose, personality, biometrics
                   </span>
                 </div>
                 <p className="text-sm text-slate-200 leading-relaxed">
-                  {hasRecovery && recoveryAdvice ? (
+                  {hasRecovery ? (
                     <>
                       检测到你昨晚睡眠 <span className="text-orange-400 font-semibold">{fmt(metrics.sleepHours)} 小时</span>，
                       身体恢复指数 <span className="text-red-400 font-semibold">{metrics.recoveryIndex}%</span>。
                       今日<span className="text-cyber-cyan font-semibold">{recoveryAdvice.text}</span>
                     </>
-                  ) : '还没有收到足够 Apple Health 数据。恢复度至少需要睡眠、HRV、静息心率、步数/活动能量中的两类真实数据。'}
+                  ) : '还没有收到 Apple Health 数据。请先运行快捷指令上传心率、步数、睡眠、HRV 或静息心率。'}
                 </p>
               </div>
 
@@ -327,28 +294,18 @@ export default function CustomPlanModal({ open, onClose, personality, biometrics
                   今日运动清单
                 </h4>
                 <div className="space-y-2">
-                  {hasRecovery && recoveryAdvice ? (
-                    recoveryAdvice.plan.map((item) => (
-                      <div
-                        key={item.title}
-                        className={`flex items-center gap-3 p-3 rounded-xl border bg-gradient-to-r ${item.color} bg-slate-800/40`}
-                      >
-                        <span className="text-lg flex-shrink-0">{item.emoji}</span>
-                        <div className="min-w-0">
-                          <p className="text-xs text-slate-200 font-medium truncate">{item.title}</p>
-                          <p className="text-[10px] text-slate-400 font-mono truncate">{item.desc}</p>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="flex items-center gap-3 p-3 rounded-xl border border-slate-700/40 bg-slate-800/40">
-                      <span className="text-lg flex-shrink-0">⌛</span>
+                  {recoveryAdvice.plan.map((item) => (
+                    <div
+                      key={item.title}
+                      className={`flex items-center gap-3 p-3 rounded-xl border bg-gradient-to-r ${item.color} bg-slate-800/40`}
+                    >
+                      <span className="text-lg flex-shrink-0">{item.emoji}</span>
                       <div className="min-w-0">
-                        <p className="text-xs text-slate-200 font-medium truncate">等待健康数据</p>
-                        <p className="text-[10px] text-slate-400 font-mono truncate">请先通过快捷指令上传至少两类恢复指标</p>
+                        <p className="text-xs text-slate-200 font-medium truncate">{item.title}</p>
+                        <p className="text-[10px] text-slate-400 font-mono truncate">{item.desc}</p>
                       </div>
                     </div>
-                  )}
+                  ))}
                 </div>
               </div>
 
@@ -367,7 +324,7 @@ export default function CustomPlanModal({ open, onClose, personality, biometrics
               ? `${NO_DATA_LABEL} · 等待快捷指令`
               : step === 'metrics'
                 ? `数据来源：${metrics.sourceLabel}`
-                : hasRecovery ? `🎯 ${PERSONALITY_LABELS[personality]} 生成` : '等待个人真实数据'}
+                : `🎯 ${PERSONALITY_LABELS[personality]} 生成`}
           </span>
           {step === 'plan' && (
             <button

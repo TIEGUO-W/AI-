@@ -105,7 +105,7 @@ export default function RightPanel({
         </div>
         <div className="flex items-center gap-3">
           <span className="text-[10px] font-mono text-slate-500">
-            {typeof environment.temp === 'number' ? `${environment.temp}°C` : '环境未上传'}
+            {environment.temp}°C
             {typeof environment.humidity === 'number' ? ` · ${environment.humidity}% RH` : ''}
           </span>
           {/* Voice toggle */}
