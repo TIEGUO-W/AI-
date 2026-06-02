@@ -17,6 +17,7 @@ export interface RecoveryBreakdown {
   sleepQuality: 'poor' | 'fair' | 'good';
   loadLevel: 'low' | 'moderate' | 'high';
   recommendation: 'recover' | 'moderate' | 'train';
+  hasAnyInput: boolean;
 }
 
 function clamp(value: number, min = 0, max = 100): number {
@@ -76,6 +77,30 @@ function recommendation(score: number): RecoveryBreakdown['recommendation'] {
 }
 
 export function calculateRecovery(input: HealthMetricInput): RecoveryBreakdown {
+  const hasAnyInput = [
+    input.heartRate,
+    input.restingHeartRate,
+    input.hrv,
+    input.sleepHours,
+    input.steps,
+    input.activeEnergy,
+    input.recoveryIndex,
+  ].some((value) => typeof value === 'number');
+
+  if (!hasAnyInput) {
+    return {
+      recoveryIndex: 0,
+      sleepScore: 0,
+      hrvScore: 0,
+      restingHrScore: 0,
+      activityLoadScore: 0,
+      sleepQuality: 'poor',
+      loadLevel: 'moderate',
+      recommendation: 'recover',
+      hasAnyInput: false,
+    };
+  }
+
   if (typeof input.recoveryIndex === 'number') {
     const recoveryIndex = round(clamp(input.recoveryIndex));
     const sleep = scoreSleep(input.sleepHours);
@@ -91,6 +116,7 @@ export function calculateRecovery(input: HealthMetricInput): RecoveryBreakdown {
       sleepQuality: sleepQuality(sleep),
       loadLevel: loadLevel(activityLoad),
       recommendation: recommendation(recoveryIndex),
+      hasAnyInput: true,
     };
   }
 
@@ -114,5 +140,6 @@ export function calculateRecovery(input: HealthMetricInput): RecoveryBreakdown {
     sleepQuality: sleepQuality(sleep),
     loadLevel: loadLevel(activityLoad),
     recommendation: recommendation(recoveryIndex),
+    hasAnyInput: true,
   };
 }
