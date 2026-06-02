@@ -1,385 +1,386 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from 'react';
 import dynamic from 'next/dynamic';
-import type { DashboardData, CoachPersonality, CoachVoice } from '@/types/dashboard';
-import {
-  MONSTER_MODELS,
-  computeIntensity,
-  pickModel,
-  getModelById,
-} from '@/data/monsters';
-import type { MonsterModel } from '@/data/monsters';
-import { PERSONALITY_LABELS, PERSONALITY_EMOJI, VOICE_LABELS } from '@/utils/coachVoice';
+import { QRCodeSVG } from 'qrcode.react';
+import type { DashboardData, CoachPersonality, CoachVoice, ChatMessage } from '@/types/dashboard';
+import type { FrontendEffect } from '@/lib/ws-client';
+import type { Application as SplineApp } from '@splinetool/runtime';
 
-// Dynamic import Spline to avoid SSR issues
+/* ─── Dynamic Spline (avoid SSR) ─── */
 const Spline = dynamic(() => import('@splinetool/react-spline'), { ssr: false });
 
+/* ─── Hydration-safe client detection ─── */
+const emptySubscribe = () => () => {};
+const useIsClient = () => useSyncExternalStore(emptySubscribe, () => true, () => false);
+
+/* ─── Monster Models ─── */
+const MONSTERS = [
+  { name: '怪兽橙', splineUrl: 'https://prod.spline.design/nrJ0KxfhMwCC5Ggi/scene.splinecode' },
+  { name: '怪兽蓝', splineUrl: 'https://prod.spline.design/DxK6VB8BA22ezp4s/scene.splinecode' },
+  { name: '怪兽绿', splineUrl: 'https://prod.spline.design/4jabPUqZm8qC6udL/scene.splinecode' },
+  { name: '怪兽紫', splineUrl: 'https://prod.spline.design/Iksy7KOHGBhVvP9L/scene.splinecode' },
+  { name: '粉红怪兽', splineUrl: 'https://prod.spline.design/kJnye6hI-JHR2jjJ/scene.splinecode' },
+];
+
+const PERSONALITY_CONFIG: Record<CoachPersonality, { label: string; emoji: string; color: string }> = {
+  gentle: { label: '温柔', emoji: '🌸', color: 'text-pink-400' },
+  strict: { label: '严格', emoji: '🎯', color: 'text-orange-400' },
+  toxic: { label: '毒舌', emoji: '🔥', color: 'text-red-400' },
+  energetic: { label: '活力', emoji: '⚡', color: 'text-yellow-400' },
+};
+
+const VOICE_CONFIG: Record<CoachVoice, { label: string; emoji: string }> = {
+  female_soft: { label: '温柔女声', emoji: '👩' },
+  male_energetic: { label: '活力男声', emoji: '🧑' },
+  male_strict: { label: '严格男声', emoji: '👨‍🏫' },
+  anime_fire: { label: '热血动漫', emoji: '🔥' },
+};
+
+/* ─── Types ─── */
 interface LeftPanelProps {
   data: DashboardData;
   personality: CoachPersonality;
   voice: CoachVoice;
   onPersonalityChange: (p: CoachPersonality) => void;
   onVoiceChange: (v: CoachVoice) => void;
-  isSpeaking?: boolean;
-  coachMessage?: string;
+  isSpeaking: boolean;
+  coachMessage: string;
+  chatMessages: ChatMessage[];
+  exerciseEffect?: FrontendEffect;
+  qualityScore?: number;
+  repCount?: number;
 }
 
-function intensityColor(i: number): string {
-  if (i <= 2) return 'from-cyan-400 to-blue-500';
-  if (i <= 4) return 'from-green-400 to-cyan-400';
-  if (i <= 6) return 'from-yellow-400 to-orange-500';
-  if (i <= 8) return 'from-orange-500 to-red-500';
-  return 'from-red-600 to-red-800';
-}
-
-function MonsterCard({
-  model,
-  isActive,
-  onSelect,
-}: {
-  model: MonsterModel;
-  isActive: boolean;
-  onSelect: (id: string) => void;
-}) {
-  return (
-    <button
-      onClick={() => onSelect(model.id)}
-      className={`relative group flex flex-col items-center gap-1.5 p-2.5 rounded-xl border transition-all duration-200 ${
-        isActive
-          ? 'border-cyber-cyan bg-cyber-cyan/10 shadow-[0_0_12px_rgba(0,229,255,0.25)]'
-          : 'border-slate-700/50 bg-slate-800/60 hover:border-slate-500 hover:bg-slate-700/60'
-      }`}
-    >
-      <div className={`w-full h-1.5 rounded-full bg-gradient-to-r ${intensityColor(model.intensity)}`} />
-      <span className={`text-xs font-medium truncate w-full text-center ${isActive ? 'text-cyber-cyan' : 'text-slate-300'}`}>
-        {model.name}
-      </span>
-      <span className="text-[10px] text-slate-500 tabular-nums">Lv.{model.intensity}</span>
-    </button>
-  );
-}
-
-// Mouth animation constants
-const MOUTH_ANIM_SPEED = 0.025;
-const MOUTH_MIN_SCALE = 0.82;
-const MOUTH_MAX_SCALE = 1.18;
-const TALK_MS_PER_CHAR = 70;
-const TALK_MIN_MS = 1500;
-const TALK_MAX_MS = 4500;
-
-const PERSONALITIES: CoachPersonality[] = ['gentle', 'strict', 'toxic', 'energetic'];
-const VOICES: CoachVoice[] = ['female_soft', 'male_energetic', 'male_strict', 'anime_fire'];
-
-interface SplineObject {
-  name: string;
-  scale: { x: number; y: number; z: number };
-}
-
-interface SplineApp {
-  getAllObjects: () => SplineObject[];
-  requestRender: () => void;
-}
-
+/* ─── Component ─── */
 export default function LeftPanel({
   data,
   personality,
   voice,
   onPersonalityChange,
   onVoiceChange,
-  isSpeaking = false,
-  coachMessage = '',
+  isSpeaking,
+  coachMessage,
+  chatMessages,
+  exerciseEffect,
+  qualityScore,
+  repCount,
 }: LeftPanelProps) {
-  const { assistant, biometrics, workout } = data;
-  const heartRateForIntensity = biometrics.hasLiveHeartRate === false ? 0 : biometrics.heartRate;
-
-  const rawIntensity = computeIntensity(
-    heartRateForIntensity,
-    biometrics.hrThreshold,
-    workout.isFormDeformed,
-  );
-
-  const [stableIntensity, setStableIntensity] = useState(rawIntensity);
-  const prevIntensityRef = useRef(rawIntensity);
-
-  useEffect(() => {
-    if (Math.abs(rawIntensity - prevIntensityRef.current) >= 2) {
-      prevIntensityRef.current = rawIntensity;
-      setStableIntensity(rawIntensity);
-    }
-  }, [rawIntensity]);
-
-  const autoModel = pickModel(stableIntensity);
-
-  const [mode, setMode] = useState<'auto' | 'manual'>('auto');
-  const [manualId, setManualId] = useState<string>(autoModel.id);
-  const [popupOpen, setPopupOpen] = useState(false);
+  const isClient = useIsClient();
+  const [activeModel, setActiveModel] = useState(0);
   const [splineLoading, setSplineLoading] = useState(true);
-  const [splineKey, setSplineKey] = useState(0);
+  const [qrOpen, setQrOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const splineRef = useRef<SplineApp | null>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
-  const activeModel = mode === 'auto' ? autoModel : getModelById(manualId);
-
-  // Mouth animation refs
-  const splineAppRef = useRef<SplineApp | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const mouthRef = useRef<{ x: number; y: number; z: number } | null>(null);
-  const originalMouthScaleRef = useRef<{ x: number; y: number; z: number } | null>(null);
-  const animFrameRef = useRef<number>(0);
-
+  /* ─── Spline mouth animation ─── */
   const stopTalking = useCallback(() => {
-    if (animFrameRef.current) {
-      cancelAnimationFrame(animFrameRef.current);
-      animFrameRef.current = 0;
-    }
-    if (mouthRef.current && originalMouthScaleRef.current) {
-      const o = originalMouthScaleRef.current;
-      mouthRef.current.x = o.x;
-      mouthRef.current.y = o.y;
-      mouthRef.current.z = o.z;
-    }
+    const app = splineRef.current;
+    if (!app) return;
+    try {
+      const mouth = app.findObjectByName('mouth');
+      if (mouth && 'scale' in mouth) {
+        (mouth.scale as { y: number }).y = 1;
+      }
+    } catch { /* ignore */ }
   }, []);
 
-  const startTalking = useCallback(
-    (message: string) => {
-      if (!mouthRef.current || !originalMouthScaleRef.current) return;
-      stopTalking();
-      const orig = originalMouthScaleRef.current;
-      const startTime = Date.now();
-      const duration = Math.min(TALK_MAX_MS, Math.max(TALK_MIN_MS, message.length * TALK_MS_PER_CHAR));
+  const startTalking = useCallback(() => {
+    const app = splineRef.current;
+    if (!app) return;
+    try {
+      const mouth = app.findObjectByName('mouth');
+      if (!mouth) return;
+      let frame = 0;
       const animate = () => {
-        if (!mouthRef.current) return;
-        const elapsed = Date.now() - startTime;
-        if (elapsed >= duration) { stopTalking(); return; }
-        const t = elapsed * MOUTH_ANIM_SPEED;
-        const amplitude = (MOUTH_MAX_SCALE - MOUTH_MIN_SCALE) / 2;
-        const center = (MOUTH_MAX_SCALE + MOUTH_MIN_SCALE) / 2;
-        mouthRef.current.y = orig.y * (center + Math.sin(t) * amplitude);
-        splineAppRef.current?.requestRender();
-        animFrameRef.current = requestAnimationFrame(animate);
+        if (!splineRef.current) return;
+        frame++;
+        if (mouth && 'scale' in mouth) {
+          (mouth.scale as { y: number }).y = 1 + Math.sin(frame * 0.15) * 0.2;
+        }
+        if (splineRef.current) requestAnimationFrame(animate);
       };
-      animFrameRef.current = requestAnimationFrame(animate);
-    },
-    [stopTalking],
-  );
-
-  const handleSplineLoad = useCallback((app: SplineApp) => {
-    stopTalking();
-    splineAppRef.current = app;
-    // Try multiple common mouth object names
-    const allObjects = app.getAllObjects();
-    const mouth = allObjects.find(
-      (o) => ['mouth', 'mouth_object', 'Mouth', 'jaw', 'Jaw'].includes(o.name),
-    );
-    if (mouth) {
-      console.log('[Spline] Found mouth object:', mouth.name);
-      mouthRef.current = mouth.scale;
-      originalMouthScaleRef.current = { x: mouth.scale.x, y: mouth.scale.y, z: mouth.scale.z };
-    } else {
-      console.warn('[Spline] No mouth object found. Available objects:', allObjects.map((o) => o.name).join(', '));
-      mouthRef.current = null;
-      originalMouthScaleRef.current = null;
-    }
-    setSplineLoading(false);
-  }, [stopTalking]);
-
-  const handleSelectModel = useCallback(
-    (id: string) => {
-      stopTalking();
-      setMode('manual');
-      setManualId(id);
-      setPopupOpen(false);
-      setSplineKey(k => k + 1);
-      setSplineLoading(true);
-    },
-    [stopTalking],
-  );
-
-  const handleAutoMode = useCallback(() => {
-    setMode('auto');
-    setPopupOpen(false);
-    if (autoModel.id !== activeModel.id) {
-      stopTalking();
-      setSplineKey(k => k + 1);
-      setSplineLoading(true);
-    }
-  }, [autoModel, activeModel, stopTalking]);
-
-  // Track speaking state with ref to avoid re-render dependency issues
-  const prevIsSpeakingRef = useRef(false);
-  useEffect(() => {
-    const speakingChanged = isSpeaking !== prevIsSpeakingRef.current;
-    prevIsSpeakingRef.current = isSpeaking;
-    if (isSpeaking && (coachMessage || assistant.message)) {
-      startTalking(coachMessage || assistant.message);
-    } else if (!isSpeaking && speakingChanged) {
-      stopTalking();
-    }
-  }, [isSpeaking, assistant.message, startTalking, stopTalking, coachMessage]);
-
-  useEffect(() => {
-    return () => {
-      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-    };
+      animate();
+    } catch { /* ignore */ }
   }, []);
+
+  useEffect(() => {
+    if (isSpeaking) { startTalking(); }
+    else { stopTalking(); }
+  }, [isSpeaking, startTalking, stopTalking]);
+
+  /* ─── Monster exercise feedback animation ─── */
+  const [monsterTransform, setMonsterTransform] = useState({ scale: 1, rotate: 0, y: 0 });
+  const prevRepRef = useRef(repCount);
+
+  // Rep completion → bounce
+  useEffect(() => {
+    if (repCount !== undefined && repCount !== prevRepRef.current && repCount > 0) {
+      prevRepRef.current = repCount;
+      // bounce up then back
+      setMonsterTransform(prev => ({ ...prev, y: -20 }));
+      setTimeout(() => setMonsterTransform(prev => ({ ...prev, y: 0 })), 300);
+    }
+  }, [repCount]);
+
+  // Quality score → scale (bigger = better form)
+  useEffect(() => {
+    if (qualityScore !== undefined && qualityScore > 0) {
+      const targetScale = 0.9 + (qualityScore / 100) * 0.2; // 0.9 → 1.1
+      setMonsterTransform(prev => ({ ...prev, scale: targetScale }));
+    } else {
+      setMonsterTransform(prev => ({ ...prev, scale: 1 }));
+    }
+  }, [qualityScore]);
+
+  // Effect → rotation/shake
+  useEffect(() => {
+    if (!exerciseEffect) {
+      setMonsterTransform(prev => ({ ...prev, rotate: 0 }));
+      return;
+    }
+    switch (exerciseEffect) {
+      case 'perfect':
+      case 'excellent':
+        // happy wiggle
+        setMonsterTransform(prev => ({ ...prev, rotate: 8 }));
+        setTimeout(() => setMonsterTransform(prev => ({ ...prev, rotate: -8 })), 150);
+        setTimeout(() => setMonsterTransform(prev => ({ ...prev, rotate: 0 })), 300);
+        break;
+      case 'good':
+        // slight nod
+        setMonsterTransform(prev => ({ ...prev, rotate: 3 }));
+        setTimeout(() => setMonsterTransform(prev => ({ ...prev, rotate: 0 })), 200);
+        break;
+      case 'adjust':
+        // warning shake
+        setMonsterTransform(prev => ({ ...prev, rotate: -6 }));
+        setTimeout(() => setMonsterTransform(prev => ({ ...prev, rotate: 6 })), 120);
+        setTimeout(() => setMonsterTransform(prev => ({ ...prev, rotate: -4 })), 240);
+        setTimeout(() => setMonsterTransform(prev => ({ ...prev, rotate: 0 })), 360);
+        break;
+      case 'warning':
+        // strong shake
+        setMonsterTransform(prev => ({ ...prev, rotate: -12 }));
+        setTimeout(() => setMonsterTransform(prev => ({ ...prev, rotate: 12 })), 100);
+        setTimeout(() => setMonsterTransform(prev => ({ ...prev, rotate: -10 })), 200);
+        setTimeout(() => setMonsterTransform(prev => ({ ...prev, rotate: 10 })), 300);
+        setTimeout(() => setMonsterTransform(prev => ({ ...prev, rotate: 0 })), 400);
+        break;
+    }
+  }, [exerciseEffect]);
+
+  /* ─── Scroll chat to bottom ─── */
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
+
+  const currentMonster = MONSTERS[activeModel];
+  const pConfig = PERSONALITY_CONFIG[personality];
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Coach Message Panel */}
-      <div
-        className={`flex-[0.28] m-3 mb-2 rounded-2xl border backdrop-blur-md p-4 flex flex-col justify-center ${
-          assistant.isAlert
-            ? 'border-red-700/50 bg-red-950/70 shadow-[0_0_25px_rgba(220,38,38,0.3)]'
-            : 'border-cyber-cyan/20 bg-slate-900/60 shadow-[0_0_25px_rgba(0,229,255,0.08)]'
-        }`}
-      >
-        <div className="flex items-center gap-2 mb-3">
-          <span className={`text-xs font-bold uppercase tracking-[0.15em] ${assistant.isAlert ? 'text-red-400' : 'text-cyber-cyan'}`}>
-            {'⚠'} AI 教练实时分析
-          </span>
-          {assistant.isAlert && (
-            <span className="animate-pulse text-[10px] font-mono text-red-400/80 tracking-wider">
-              ● WARNING
-            </span>
-          )}
-        </div>
-        <p className={`text-base font-semibold leading-relaxed ${assistant.isAlert ? 'text-red-100' : 'text-white'}`}>
-          &ldquo;{assistant.message}&rdquo;
-        </p>
-        <div className="mt-3 flex items-center gap-4 text-[11px] text-slate-500 font-mono">
-          <span>心率 {biometrics.hasLiveHeartRate === false ? '--' : biometrics.heartRate} BPM</span>
-          <span>分数 {workout.score}</span>
-          <span>动作 {workout.currentAction}</span>
-        </div>
-      </div>
-
-      {/* 3D Model */}
-      <div className="flex-1 relative mx-3 mb-3">
-        <div className="absolute inset-0">
+    <div className="flex flex-col h-full bg-cyber-panel/40 min-h-0 overflow-y-auto">
+      {/* ═══ Monster Zone ════════════════════════════ */}
+      <div className="relative w-full overflow-hidden" style={{ height: '240px' }}>
+        {splineLoading && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-8 h-8 border-2 border-cyber-cyan/20 border-t-cyber-cyan rounded-full animate-spin" />
+          </div>
+        )}
+        <div
+          className="w-full h-full transition-transform duration-300 ease-out"
+          style={{
+            transform: `scale(${monsterTransform.scale}) rotate(${monsterTransform.rotate}deg) translateY(${monsterTransform.y}px)`,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
           <Spline
-            key={splineKey}
-            scene={activeModel.url}
-            onLoad={handleSplineLoad}
-            style={{ width: '100%', height: '100%' }}
+            scene={currentMonster.splineUrl}
+            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+            onLoad={(spline) => {
+              splineRef.current = spline as SplineApp;
+              setSplineLoading(false);
+              const mouth = (spline as { findObjectByName?: (n: string) => Record<string, unknown> })?.findObjectByName?.('mouth');
+              if (mouth) console.log('[Spline] Found mouth object');
+              else console.warn('[Spline] No mouth object found');
+            }}
           />
         </div>
-        <div className="absolute bottom-0 inset-x-0 h-24 bg-gradient-to-t from-cyber-cyan/25 via-cyber-cyan/5 to-transparent pointer-events-none" />
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-40 h-2.5 rounded-full bg-cyber-cyan/30 blur-[6px] pointer-events-none" />
-        {splineLoading && (
-          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center">
-            <div className="w-10 h-10 border-2 border-cyber-cyan/30 border-t-cyber-cyan rounded-full animate-spin" />
-            <span className="mt-3 text-xs text-cyber-cyan/60 tracking-wider font-mono">
-              LOADING 3D MODEL
+
+        {/* Speaking indicator */}
+        {isSpeaking && (
+          <div className="absolute bottom-2 left-1/2 -translate-x-1/2">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-cyber-cyan/10 backdrop-blur-sm px-2 py-0.5 text-[9px] text-cyber-cyan font-mono border border-cyber-cyan/15 animate-pulse">
+              <span className="w-1 h-1 rounded-full bg-cyber-cyan" />
+              说话中
             </span>
           </div>
         )}
-        <div className="absolute bottom-2 left-4 right-4 z-20 text-sm text-cyber-cyan/70 text-center truncate pointer-events-none font-mono tracking-wider">
-          {activeModel.name}
-        </div>
-        <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
+      </div>
+
+      {/* ═══ Monster Selector ════════════════════════════ */}
+      <div className="flex items-center justify-center gap-1.5 px-4 py-2">
+        {MONSTERS.map((m, i) => (
           <button
-            onClick={() => setPopupOpen((v) => !v)}
-            className="w-8 h-8 rounded-full border border-cyber-cyan/40 bg-cyber-dark/60 flex items-center justify-center hover:border-cyber-cyan hover:bg-cyber-dark/80 transition-all"
-            title="切换怪兽"
-          >
-            <svg className="w-4 h-4 text-cyber-cyan" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6h16.5M3.75 12h16.5M12 17.25h8.25" />
-            </svg>
-          </button>
-          <div
-            className={`w-3 h-3 rounded-full flex-shrink-0 ${
-              mode === 'auto'
-                ? 'bg-cyber-cyan shadow-[0_0_8px_rgba(0,229,255,0.7)]'
-                : 'bg-yellow-400 shadow-[0_0_8px_rgba(250,204,21,0.5)]'
+            key={m.name}
+            onClick={() => { setActiveModel(i); setSplineLoading(true); }}
+            className={`text-[10px] px-2.5 py-1 rounded-lg border transition-all font-mono ${
+              activeModel === i
+                ? 'border-cyber-cyan/25 bg-cyber-cyan/8 text-cyber-cyan'
+                : 'border-white/[0.04] bg-transparent text-slate-500 hover:text-slate-300'
             }`}
-            title={mode === 'auto' ? '自动模式' : '手动模式'}
-          />
+          >
+            {m.name}
+          </button>
+        ))}
+      </div>
+
+      {/* ═══ Coach Message ════════════════════════════ */}
+      <div className="px-4 py-2">
+        <div className="rounded-xl bg-cyber-dark/60 border border-white/[0.04] p-3">
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <span className="text-[9px] font-bold tracking-[0.15em] uppercase text-cyber-cyan/60 font-mono">
+              AI Coach
+            </span>
+            <span className={`text-[9px] ${pConfig.color}`}>{pConfig.emoji}</span>
+          </div>
+          <p className="text-[13px] leading-relaxed text-white/90">
+            {isClient ? (coachMessage || '准备好了吗？') : '准备好了吗？'}
+          </p>
         </div>
       </div>
 
-      {/* Popup: Monster Selector */}
-      {popupOpen && (
-        <div className="fixed inset-0 z-50 flex items-end justify-start p-6" onClick={() => setPopupOpen(false)}>
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="relative w-full max-w-lg mb-8 ml-4 rounded-2xl border border-slate-700/60 bg-slate-900/85 backdrop-blur-xl shadow-2xl p-5 animate-slide-up"
-          >
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-white tracking-wide">选择 AI 教练形象</h3>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={handleAutoMode}
-                  className={`text-xs px-3 py-1 rounded-full border transition-all ${
-                    mode === 'auto'
-                      ? 'border-cyber-cyan/50 bg-cyber-cyan/15 text-cyber-cyan'
-                      : 'border-slate-600/50 bg-slate-800/60 text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  AUTO
-                </button>
-                <button onClick={() => setPopupOpen(false)} className="text-slate-400 hover:text-white transition-colors text-lg leading-none">
-                  ✕
-                </button>
+      {/* ═══ Chat Bubbles ════════════════════════════ */}
+      <div className="flex-1 overflow-y-auto px-4 py-1 space-y-1.5 min-h-0">
+        {isClient && chatMessages.slice(-8).map((msg, i) => (
+          <div key={msg.timestamp + '-' + i} className={`flex ${msg.from === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div className={`max-w-[85%] rounded-xl px-3 py-1.5 text-[11px] leading-relaxed ${
+              msg.from === 'user'
+                ? 'bg-cyber-cyan/12 border border-cyber-cyan/15 text-cyber-cyan'
+                : 'bg-white/[0.04] border border-white/[0.04] text-slate-300'
+            }`}>
+              {msg.text}
+            </div>
+          </div>
+        ))}
+        <div ref={chatEndRef} />
+      </div>
+
+      {/* ═══ Settings Panel ════════════════════════════ */}
+      <div className="px-4 py-3 border-t border-white/[0.04]">
+        <button
+          onClick={() => setSettingsOpen(!settingsOpen)}
+          className="flex items-center gap-1.5 text-[10px] font-mono text-slate-500 hover:text-slate-300 transition-colors"
+        >
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 011.45.12l.773.774c.39.389.44 1.002.12 1.45l-.527.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.56.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.893.149c-.425.07-.765.383-.93.78-.165.398-.143.854.107 1.204l.527.738c.32.447.269 1.06-.12 1.45l-.774.773a1.125 1.125 0 01-1.449.12l-.738-.527c-.35-.25-.806-.272-1.203-.107-.397.165-.71.505-.781.929l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527c-.447.32-1.06.269-1.45-.12l-.773-.774a1.125 1.125 0 01-.12-1.45l.527-.737c.25-.35.273-.806.108-1.204-.165-.397-.505-.71-.93-.78l-.894-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.765-.383.93-.78.165-.398.143-.854-.107-1.204l-.527-.738a1.125 1.125 0 01.12-1.45l.773-.773a1.125 1.125 0 011.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894z" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+          教练设置
+          <svg className={`w-2.5 h-2.5 transition-transform ${settingsOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        {/* QR Code Button */}
+        <button
+          onClick={() => setQrOpen(!qrOpen)}
+          className="flex items-center gap-1.5 text-[10px] font-mono text-slate-500 hover:text-slate-300 transition-colors mt-1"
+        >
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0113.5 9.375v-4.5z" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 6.75h.75v.75h-.75v-.75zM6.75 16.5h.75v.75h-.75v-.75zM16.5 6.75h.75v.75h-.75v-.75zM13.5 13.5h.75v.75h-.75v-.75zM13.5 19.5h.75v.75h-.75v-.75zM19.5 13.5h.75v.75h-.75v-.75zM19.5 19.5h.75v.75h-.75v-.75zM16.5 16.5h.75v.75h-.75v-.75z" />
+          </svg>
+          扫码连接健康数据
+        </button>
+
+        {settingsOpen && (
+          <div className="mt-3 space-y-3 animate-in slide-in-from-bottom-2 duration-200">
+            {/* Personality */}
+            <div>
+              <span className="text-[9px] font-mono text-slate-500 tracking-wider uppercase">性格</span>
+              <div className="flex gap-1 mt-1">
+                {(Object.entries(PERSONALITY_CONFIG) as [CoachPersonality, typeof PERSONALITY_CONFIG.gentle][]).map(([key, cfg]) => (
+                  <button
+                    key={key}
+                    onClick={() => onPersonalityChange(key)}
+                    className={`flex-1 text-[10px] px-1.5 py-1 rounded-lg border transition-all ${
+                      personality === key
+                        ? `border-white/10 bg-white/[0.06] ${cfg.color}`
+                        : 'border-white/[0.04] text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    {cfg.emoji} {cfg.label}
+                  </button>
+                ))}
               </div>
             </div>
-            {mode === 'auto' && (
-              <p className="text-[11px] text-slate-500 mb-3">
-                自动匹配 · 强度指数 {stableIntensity}/10 · 当前 {autoModel.name}
-              </p>
-            )}
-            <div className="grid grid-cols-4 gap-2.5">
-              {MONSTER_MODELS.map((m) => (
-                <MonsterCard
-                  key={m.id}
-                  model={m}
-                  isActive={activeModel.id === m.id && mode === 'manual'}
-                  onSelect={handleSelectModel}
-                />
-              ))}
-            </div>
-            {/* Personality & Voice */}
-            <div className="mt-5 pt-4 border-t border-slate-700/50">
-              <h4 className="text-xs font-semibold text-white tracking-wide mb-3">
-                定制灵魂 <span className="text-slate-500 font-normal">Customize Personality & Voice</span>
-              </h4>
-              <div className="mb-3">
-                <span className="text-[10px] text-slate-500 uppercase tracking-wider mb-1.5 block">性格 Personality</span>
-                <div className="grid grid-cols-2 gap-1.5">
-                  {PERSONALITIES.map((p) => (
-                    <button
-                      key={p}
-                      onClick={() => onPersonalityChange(p)}
-                      className={`text-xs px-3 py-2 rounded-lg border transition-all text-left ${
-                        personality === p
-                          ? 'border-cyber-cyan/50 bg-cyber-cyan/10 text-cyber-cyan'
-                          : 'border-slate-600/40 bg-slate-800/50 text-slate-400 hover:border-slate-500 hover:text-slate-200'
-                      }`}
-                    >
-                      <span className="mr-1.5">{PERSONALITY_EMOJI[p]}</span>
-                      {PERSONALITY_LABELS[p]}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <span className="text-[10px] text-slate-500 uppercase tracking-wider mb-1.5 block">音色 Voice</span>
-                <div className="grid grid-cols-2 gap-1.5">
-                  {VOICES.map((v) => (
-                    <button
-                      key={v}
-                      onClick={() => onVoiceChange(v)}
-                      className={`text-xs px-3 py-2 rounded-lg border transition-all text-left ${
-                        voice === v
-                          ? 'border-cyber-cyan/50 bg-cyber-cyan/10 text-cyber-cyan'
-                          : 'border-slate-600/40 bg-slate-800/50 text-slate-400 hover:border-slate-500 hover:text-slate-200'
-                      }`}
-                    >
-                      {VOICE_LABELS[v]}
-                    </button>
-                  ))}
-                </div>
+
+            {/* Voice */}
+            <div>
+              <span className="text-[9px] font-mono text-slate-500 tracking-wider uppercase">语音</span>
+              <div className="grid grid-cols-2 gap-1 mt-1">
+                {(Object.entries(VOICE_CONFIG) as [CoachVoice, typeof VOICE_CONFIG.female_soft][]).map(([key, cfg]) => (
+                  <button
+                    key={key}
+                    onClick={() => onVoiceChange(key)}
+                    className={`text-[10px] px-1.5 py-1 rounded-lg border transition-all text-left ${
+                      voice === key
+                        ? 'border-cyber-cyan/20 bg-cyber-cyan/8 text-cyber-cyan'
+                        : 'border-white/[0.04] text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    {cfg.emoji} {cfg.label}
+                  </button>
+                ))}
               </div>
             </div>
+
+            {/* QR Code - 扫码在手机上打开 */}
+            <div className="mt-2 pt-2 border-t border-white/[0.04]">
+              <button
+                onClick={() => setQrOpen(true)}
+                className="w-full flex items-center gap-2 text-[10px] text-slate-400 hover:text-cyber-cyan transition-colors py-1"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0113.5 9.375v-4.5z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 6.75h.75v.75h-.75v-.75zM6.75 16.5h.75v.75h-.75v-.75zM16.5 6.75h.75v.75h-.75v-.75zM13.5 13.5h.75v.75h-.75v-.75zM13.5 19.5h.75v.75h-.75v-.75zM19.5 13.5h.75v.75h-.75v-.75zM19.5 19.5h.75v.75h-.75v-.75zM16.5 16.5h.75v.75h-.75v-.75z" />
+                </svg>
+                <span>扫码手机训练</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Apple Health QR Modal */}
+      {qrOpen && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setQrOpen(false)}>
+          <div className="bg-[#0C1018] border border-cyber-cyan/20 rounded-2xl p-6 flex flex-col items-center gap-4 shadow-[0_0_30px_rgba(0,229,255,0.1)]" onClick={(e) => e.stopPropagation()}>
+            <span className="text-sm font-bold text-white tracking-wider">连接 Apple Health</span>
+            <div className="bg-white rounded-xl p-3">
+              <QRCodeSVG
+                value={typeof window !== 'undefined' ? `${window.location.origin}/health` : ''}
+                size={180}
+                level="M"
+                fgColor="#05080F"
+                bgColor="#FFFFFF"
+              />
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <span className="text-[10px] text-slate-400 text-center">用 iPhone 扫码打开健康档案页面<br/>填写信息 + 安装快捷指令同步心率</span>
+              <div className="w-full h-px bg-cyber-cyan/10 my-1" />
+              <span className="text-[10px] text-cyber-cyan/60 text-center font-mono">扫码后在页面内复制 URL</span>
+            </div>
+            <button
+              onClick={() => setQrOpen(false)}
+              className="text-xs text-slate-400 hover:text-cyber-cyan transition-colors mt-1"
+            >
+              关闭
+            </button>
           </div>
         </div>
       )}

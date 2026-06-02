@@ -25,7 +25,14 @@ Thumbs.db
 
 # Logs
 *.log
-.sensor-state.json
 
 # Cache
 .turbo/
+.cozeproj/reduction
+
+# Uploads & runtime data
+public/uploads/
+public/*.task
+
+# TypeScript incremental build info
+tsconfig.tsbuildinfo

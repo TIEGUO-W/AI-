@@ -18,7 +18,6 @@ export interface Landmark {
 export interface PoseFrame {
   landmarks: Landmark[];
   timestamp: number;
-  exercise?: string;
 }
 
 export interface PoseBatchPayload {
@@ -27,7 +26,7 @@ export interface PoseBatchPayload {
   sessionId: string;
 }
 
-// 浏览器设置运动类型（远程模式时传给服务端）
+// 浏览器设置运动类型
 export interface SetExercisePayload {
   exercise: string;
 }
@@ -41,6 +40,7 @@ export interface CoachingFeedback {
   repCount: number;       // 计数
   stage: string;          // 当前阶段
   quality: 'good' | 'warning' | 'error'; // 动作质量
+  qualityScore?: number;  // 动作质量分数 (0-100)
   effect: FrontendEffect; // 前端特效指令
   tips: string[];         // 纠正建议
   encouragement: string;  // 鼓励语
@@ -63,24 +63,39 @@ export interface AlgorithmUpdatePayload {
 export interface TTSReadyPayload {
   audioUrl: string;
   text: string;
+  priority?: 'high' | 'medium' | 'low';
 }
 
-// 远程帧数据（服务端骨架检测后的结果推送到浏览器）
-export interface RemoteFramePayload {
-  image: string;    // base64 JPEG（带骨架叠加）
-  width: number;
-  height: number;
+// Apple Health 心率推送
+export interface HeartRatePayload {
+  heartRate: number;
+  source: 'apple_health';
   timestamp: number;
 }
 
-export interface RemoteSkeletonPayload {
+// ─── 跟练模式消息 ────────────────────────────────
+
+export interface StartFollowAlongPayload {
+  recordingId: string;
+  coachVideoUrl: string;
+  totalFrames: number;
+  coachLandmarks: Landmark[][];
+}
+
+export interface ComparisonUpdatePayload {
+  matchQuality: number;
+  angleDiffs: Record<string, number>;
+  coachFrameIndex: number;
+  userScore: number;
+  coachAngles: Record<string, number | null>;
+  followed: boolean;
+  perJointStatus: Record<string, 'good' | 'adjust' | 'correct'>;
+}
+
+export interface CoachFramePayload {
+  frameIndex: number;
   landmarks: Landmark[];
-  worldLandmarks: Landmark[];
-  timestamp: number;
-}
-
-export interface RpiStatusPayload {
-  connected: boolean;
+  perJointStatus: Record<string, string>;
 }
 
 // ─── WebSocket 客户端工具 ───────────────────────

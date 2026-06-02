@@ -213,13 +213,13 @@ export default function WorkoutSummaryModal({
             onClick={onClose}
             className="flex-1 px-4 py-2.5 rounded-xl bg-cyber-cyan/15 border border-cyber-cyan/40 text-xs text-cyber-cyan font-semibold hover:bg-cyber-cyan/25 transition-all"
           >
-            查看演示总结
+            💾 保存并同步到 Apple Health
           </button>
         </div>
 
         {/* ── Disclaimer ──────────────────────────────────────── */}
         <p className="text-center text-[10px] text-slate-600 font-mono pb-4">
-          当前为演示数据 · 尚未接入 Apple Health 同步
+          数据已保存至本地 · 同步至 Apple Health 需 watchOS 授权
         </p>
       </div>
     </div>

@@ -13,6 +13,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Basic URL validation for audioUrl mode
+    if (audioUrl) {
+      try {
+        const parsed = new URL(audioUrl);
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+          return NextResponse.json({ error: 'audioUrl 必须是 HTTP/HTTPS 地址' }, { status: 400 });
+        }
+      } catch {
+        return NextResponse.json({ error: 'audioUrl 格式无效' }, { status: 400 });
+      }
+    }
+
     const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
     const config = new Config();
     const client = new ASRClient(config, customHeaders);
@@ -27,6 +39,15 @@ export async function POST(request: NextRequest) {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : '语音识别失败';
     console.error('[ASR] 错误:', message);
-    return NextResponse.json({ error: message }, { status: 500 });
+    // If the error is about no valid speech (silence), return empty result gracefully
+    if (/no valid speech|silence audio/i.test(message)) {
+      return NextResponse.json({ text: '', duration: 0 });
+    }
+    // If the error is about audio download failure, return 400 (client provided bad URL)
+    const isDownloadError = /audio download failed|download failed/i.test(message);
+    return NextResponse.json(
+      { error: isDownloadError ? '音频下载失败，请检查 audioUrl 是否可访问' : message },
+      { status: isDownloadError ? 400 : 500 }
+    );
   }
 }

@@ -3,10 +3,8 @@ export type CoachVoice = 'female_soft' | 'male_energetic' | 'male_strict' | 'ani
 
 export interface Environment {
   temp: number;
-  humidity?: number;
   aiActive: boolean;
   connectionStatus: 'connecting' | 'connected' | 'disconnected';
-  sensorUpdatedAt?: number | null;
 }
 
 export interface Workout {
@@ -20,21 +18,18 @@ export interface Workout {
 export interface Biometrics {
   heartRate: number;
   hrThreshold: number;
-  hasLiveHeartRate?: boolean;
-  steps?: number;
-  activeEnergy?: number;
-  restingHeartRate?: number;
-  hrv?: number;
-  sleepHours?: number;
-  recoveryIndex?: number;
-  source?: 'demo' | 'apple_health' | 'manual';
-  updatedAt?: number | null;
 }
 
 export interface Assistant {
   message: string;
   isAlert: boolean;
   modelId: string;
+}
+
+export interface ChatMessage {
+  from: 'user' | 'coach';
+  text: string;
+  timestamp: number;
 }
 
 export interface DashboardData {

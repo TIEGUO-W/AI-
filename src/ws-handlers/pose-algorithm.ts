@@ -45,9 +45,6 @@ export type ExerciseStage =
 
 export type FrontendEffect = 'perfect' | 'excellent' | 'good' | 'adjust' | 'warning' | null;
 
-export const SUPPORTED_EXERCISES = ['auto', 'squat', 'push_up', 'plank', 'lunge', 'jumping_jack', 'high_knees'] as const;
-export type SupportedExercise = typeof SUPPORTED_EXERCISES[number];
-
 export interface AlgorithmResult {
   exercise: string;
   stage: ExerciseStage;
@@ -201,10 +198,20 @@ export class PoseAlgorithmEngine {
     stageConfirmCount: number;
   }> = {};
 
-  // 自适应标定
+  // 自适应标定（深蹲用）
   private calibrationSamples: number[] = [];
   private calibrated = false;
   private baselineKnee = 170;
+
+  // 每运动独立标定
+  private calibrations: Record<string, { samples: number[]; baseline: number; ready: boolean }> = {};
+
+  private getCalibration(exercise: string) {
+    if (!this.calibrations[exercise]) {
+      this.calibrations[exercise] = { samples: [], baseline: 0, ready: false };
+    }
+    return this.calibrations[exercise];
+  }
 
   // 深蹲标定用临时状态
   private pendingStage: ExerciseStage | null = null;
@@ -215,6 +222,7 @@ export class PoseAlgorithmEngine {
     this.calibrationSamples = [];
     this.calibrated = false;
     this.baselineKnee = 170;
+    this.calibrations = {};
     this.pendingStage = null;
     this.stageCounter = 0;
   }
@@ -239,6 +247,8 @@ export class PoseAlgorithmEngine {
   // ── 主入口 ──────────────────────────────
 
   analyze(landmarks: Landmark[], exercise: string): AlgorithmResult {
+    const st = this.state(exercise);
+
     // 1. 原始关节点
     const rawKps: Record<string, RawKP> = {};
     for (const [idx, name] of Object.entries(JOINT_MAP)) {
@@ -246,15 +256,8 @@ export class PoseAlgorithmEngine {
       if (lm) rawKps[name] = { x: lm.x, y: lm.y, confidence: lm.visibility ?? 0 };
     }
 
-    const requestedExercise = this.normalizeExercise(exercise);
-    const bootstrapState = this.state(requestedExercise === 'auto' ? 'squat' : requestedExercise);
-
     // 2. 骨架清洗
-    const cleaning = this.cleanPose(rawKps, bootstrapState.previousKeypoints);
-    const activeExercise = requestedExercise === 'auto'
-      ? this.inferExercise(cleaning)
-      : requestedExercise;
-    const st = this.state(activeExercise);
+    const cleaning = this.cleanPose(rawKps, st.previousKeypoints);
     if (!cleaning.abnormalFrame) {
       st.previousKeypoints = cleaning.keypoints;
     }
@@ -263,13 +266,13 @@ export class PoseAlgorithmEngine {
     const angles = this.calculateAngles(cleaning);
 
     // 4. 阶段识别
-    const { stage, primaryValue } = this.recognizeStage(activeExercise, angles, cleaning, st);
+    const { stage, primaryValue } = this.recognizeStage(exercise, angles, cleaning, st);
 
     // 5. 计数
-    const completedRep = this.updateCounter(activeExercise, stage, st);
+    const completedRep = this.updateCounter(exercise, stage, st);
 
     // 6. 质量评分
-    const quality = this.scoreQuality(activeExercise, cleaning, angles, stage, st);
+    const quality = this.scoreQuality(exercise, cleaning, angles, stage, st);
 
     // 7. 更新状态
     if (stage !== 'unknown') st.previousStage = stage;
@@ -283,52 +286,11 @@ export class PoseAlgorithmEngine {
     const effect = this.determineEffect(quality.qualityScore, completedRep, stage);
 
     // 9. 构建结果
-    const ctx = this.buildContext(activeExercise, stage, completedRep, cleaning, angles, quality, st.repCount);
+    const ctx = this.buildContext(exercise, stage, completedRep, cleaning, angles, quality, st.repCount);
     return {
-      exercise: activeExercise, stage, repCount: st.repCount, completedRep,
+      exercise, stage, repCount: st.repCount, completedRep,
       angles, quality, effect, algorithmContext: ctx,
     };
-  }
-
-  private normalizeExercise(exercise: string): SupportedExercise {
-    if ((SUPPORTED_EXERCISES as readonly string[]).includes(exercise)) {
-      return exercise as SupportedExercise;
-    }
-    if (exercise === 'pushup') return 'push_up';
-    if (exercise === 'high_knee') return 'high_knees';
-    return 'squat';
-  }
-
-  private inferExercise(cleaning: CleaningResult): Exclude<SupportedExercise, 'auto'> {
-    const angles = this.calculateAngles(cleaning);
-    const kp = cleaning.keypoints;
-    if (this.isPushUpPosition(cleaning, angles)) return 'push_up';
-
-    const bodyHorizontal = this.isBodyHorizontal(kp);
-    if (bodyHorizontal && angles.bodyLineAngle !== null && angles.bodyLineAngle <= 18) {
-      return 'plank';
-    }
-
-    const leftLift = verticalLift(kp.left_hip, kp.left_knee);
-    const rightLift = verticalLift(kp.right_hip, kp.right_knee);
-    if ((leftLift ?? 0) > 0.08 || (rightLift ?? 0) > 0.08) return 'high_knees';
-
-    const stance = angles.stanceWidth;
-    const sw = shoulderWidthKp(kp);
-    if (stance !== null && sw !== null) {
-      const stanceRatio = stance / Math.max(sw, 0.0001);
-      if (stanceRatio >= 1.45 && handsAboveShoulders(kp)) return 'jumping_jack';
-    }
-
-    const leftKnee = angles.leftKneeAngle;
-    const rightKnee = angles.rightKneeAngle;
-    const minKnee = minDefined(leftKnee, rightKnee);
-    const maxKnee = leftKnee !== null && rightKnee !== null ? Math.max(leftKnee, rightKnee) : null;
-    if (minKnee !== null && maxKnee !== null && minKnee < 125 && maxKnee - minKnee > 25) {
-      return 'lunge';
-    }
-
-    return 'squat';
   }
 
   // ── 骨架清洗（移植自 Python） ──────────
@@ -501,7 +463,7 @@ export class PoseAlgorithmEngine {
       case 'plank':
         return { stage: 'holding', primaryValue: angles.bodyLineAngle };
       case 'jumping_jack':
-        return this.recognizeJumpingJack(cleaning, angles);
+        return this.recognizeJumpingJack(cleaning, angles, st);
       case 'high_knees':
         return this.recognizeHighKnees(cleaning, st);
       default:
@@ -544,12 +506,13 @@ export class PoseAlgorithmEngine {
       if (knee < prevK - 3) dir = 'down';
       else if (knee > prevK + 3) dir = 'up';
     }
+    const hipMoving = prevK !== null && Math.abs(hip - (st.lastPrimaryDelta ?? 0)) > 2;
 
     const ps = st.previousStage;
     let ns: ExerciseStage = ps;
 
     if (ps === 'standing' || ps === 'unknown') {
-      if (knee < desc && dir === 'down') ns = 'descending';
+      if (knee < desc && hipMoving && dir === 'down') ns = 'descending';
     } else if (ps === 'descending') {
       if (knee < bot) ns = 'bottom';
       else if (knee > stand) ns = 'standing';
@@ -597,36 +560,126 @@ export class PoseAlgorithmEngine {
     return { stage: ps, primaryValue: value };
   }
 
-  /** 俯卧撑：必须先满足水平支撑姿态，再用肘角判断上下阶段 */
+  /** 俯卧撑：自适应肘角标定 + 双肘指标 + 时序确认 */
   private recognizePushUpStage(
     angles: JointAngles,
     cleaning: CleaningResult,
     st: ReturnType<typeof this.state>,
   ): { stage: ExerciseStage; primaryValue: number | null } {
-    if (!this.isPushUpPosition(cleaning, angles)) {
-      st.hadDownPhase = false;
-      return { stage: 'unknown', primaryValue: null };
+    const elbow = avgDefined(angles.leftElbowAngle, angles.rightElbowAngle);
+    if (elbow === null) return { stage: 'unknown', primaryValue: null };
+
+    const cal = this.getCalibration('push_up');
+
+    // 自适应标定：前8帧采样肘角（用户在准备姿势时肘关节接近伸直）
+    if (!cal.ready) {
+      cal.samples.push(elbow);
+      if (cal.samples.length >= CALIBRATION_FRAMES) {
+        cal.baseline = Math.max(...cal.samples);
+        cal.ready = true;
+        console.log(`[calibrated] push_up baselineElbow=${cal.baseline.toFixed(1)}deg`);
+      }
+      return { stage: 'up', primaryValue: elbow };
     }
 
-    return this.recognizeBendStage(
-      avgDefined(angles.leftElbowAngle, angles.rightElbowAngle),
-      st, 155, 95, 'up', 'bottom',
-    );
+    const bl = cal.baseline;
+    const upThreshold = bl * 0.85;   // 肘角 > 85%基线 = 直臂
+    const bottomThreshold = bl * 0.55; // 肘角 < 55%基线 = 到底
+
+    // 方向判断
+    const prevE = st.previousPrimary;
+    let dir: 'down' | 'up' | 'none' = 'none';
+    if (prevE !== null) {
+      if (elbow < prevE - 5) dir = 'down';
+      else if (elbow > prevE + 5) dir = 'up';
+    }
+
+    let ns: ExerciseStage = st.previousStage;
+    if (elbow >= upThreshold) {
+      ns = 'up';
+    } else if (elbow <= bottomThreshold) {
+      ns = 'bottom';
+    } else if (dir === 'down') {
+      ns = 'descending';
+    } else if (dir === 'up') {
+      ns = 'ascending';
+    }
+
+    return this.confirmStage(ns, st);
   }
 
-  /** 开合跳 */
+  /** 开合跳：自适应标定 + 双指标 + 时序确认（姿态快照策略） */
   private recognizeJumpingJack(
     cleaning: CleaningResult,
     angles: JointAngles,
+    st: ReturnType<typeof this.state>,
   ): { stage: ExerciseStage; primaryValue: number | null } {
     const stance = angles.stanceWidth;
     const sw = shoulderWidthKp(cleaning.keypoints);
     const handsUp = handsAboveShoulders(cleaning.keypoints);
     if (stance === null || sw === null) return { stage: 'unknown', primaryValue: null };
     const ratio = stance / Math.max(sw, 0.0001);
-    if (ratio >= 1.55 && handsUp) return { stage: 'open', primaryValue: ratio };
-    if (ratio <= 1.15 && !handsUp) return { stage: 'closed', primaryValue: ratio };
-    return { stage: 'transition', primaryValue: ratio };
+
+    const cal = this.getCalibration('jumping_jack');
+
+    // 自适应标定：前 8 帧在闭合姿态时采样站距/肩宽比
+    if (!cal.ready) {
+      // 只在手放下时采样（更可能是闭合姿态）
+      if (!handsUp) {
+        cal.samples.push(ratio);
+        if (cal.samples.length >= CALIBRATION_FRAMES) {
+          cal.baseline = cal.samples.reduce((a, b) => a + b, 0) / cal.samples.length;
+          cal.ready = true;
+          console.log(`[calibrated] jumping_jack baselineRatio=${cal.baseline.toFixed(3)}`);
+        }
+      }
+      return { stage: 'closed', primaryValue: ratio };
+    }
+
+    const bl = cal.baseline;
+    // open: 站距明显大于闭合基线 AND 手过头
+    // closed: 站距接近基线 AND 手放下
+    const openThreshold = bl * 1.35;
+    const closedThreshold = bl * 1.12;
+
+    const isOpen = ratio >= openThreshold && handsUp;
+    const isClosed = ratio <= closedThreshold && !handsUp;
+
+    let ns: ExerciseStage;
+    if (isOpen) {
+      ns = 'open';
+    } else if (isClosed) {
+      ns = 'closed';
+    } else {
+      ns = 'transition';
+    }
+
+    // 时序确认（防止快速运动中的抖动误判）
+    return this.confirmStage(ns, st);
+  }
+
+  /** 时序确认：连续 CONFIRM_FRAMES 帧同一阶段才切换 */
+  private confirmStage(
+    newStage: ExerciseStage,
+    st: ReturnType<typeof this.state>,
+  ): { stage: ExerciseStage; primaryValue: number | null } {
+    const ps = st.previousStage as string;
+    const prevPending = (st as any)._pendingStage as string | undefined;
+
+    if (newStage !== prevPending) {
+      (st as any)._pendingStage = newStage;
+      (st as any)._pendingCount = 1;
+    } else {
+      (st as any)._pendingCount = ((st as any)._pendingCount || 0) + 1;
+    }
+
+    if ((st as any)._pendingCount >= CONFIRM_FRAMES && newStage !== ps) {
+      (st as any)._pendingCount = 0;
+      (st as any)._pendingStage = undefined;
+      return { stage: newStage, primaryValue: null };
+    }
+
+    return { stage: ps as ExerciseStage, primaryValue: null };
   }
 
   /** 高抬腿 */
@@ -721,29 +774,79 @@ export class PoseAlgorithmEngine {
       score -= 15; errors.push('back_leaning_forward');
     }
 
-    // 俯卧撑姿态门槛：防止站立摆手被识别为俯卧撑
-    if (exercise === 'push_up' && !this.isPushUpPosition(cleaning, angles)) {
-      score -= 35; warnings.push('not_push_up_position');
+    // 俯卧撑专项质量
+    if (exercise === 'push_up') {
+      // 塌腰
+      if (this.pushUpHipsSag(kp)) {
+        score -= 20; errors.push('hips_sagging');
+      }
+      // 没到底就起来了
+      if (this.shallowTurnaround(stage, st)) {
+        score -= 15; errors.push('insufficient_depth');
+      }
+      // 手肘外扩（肘与身体夹角 < 30° = 肩膀压力过大）
+      if (this.elbowsFlared(cleaning)) {
+        score -= 15; warnings.push('elbows_too_wide');
+      }
+      // 头下垂（鼻尖 y > 肩中线 y = 头往下掉）
+      if (this.headDropping(cleaning)) {
+        score -= 5; warnings.push('keep_head_neutral');
+      }
+      // 左右臂不平衡
+      if (angles.leftElbowAngle !== null && angles.rightElbowAngle !== null &&
+          Math.abs(angles.leftElbowAngle - angles.rightElbowAngle) > 20) {
+        score -= 10; warnings.push('uneven_arms');
+      }
     }
 
-    // 俯卧撑塌腰
-    if (exercise === 'push_up' && this.pushUpHipsSag(kp)) {
-      score -= 20; errors.push('hips_sagging');
+    // 平板支撑专项质量
+    if (exercise === 'plank') {
+      if (angles.bodyLineAngle !== null) {
+        if (angles.bodyLineAngle > 22) {
+          score -= 30; errors.push('hips_sagging');  // 严重塌腰
+        } else if (angles.bodyLineAngle > 15) {
+          score -= 15; warnings.push('slight_hips_drop');
+        } else if (angles.bodyLineAngle < -10) {
+          score -= 15; warnings.push('hips_too_high');  // 屁股翘太高
+        }
+      }
+      // 肩膀前移（肘在肩前 = 肩胛没收紧）
+      if (this.shouldersForward(cleaning)) {
+        score -= 10; warnings.push('shoulders_forward');
+      }
+      // 身体抖动：角度变化过快
+      if ((st.lastPrimaryDelta ?? 0) > 8) {
+        score -= 10; warnings.push('body_shaking');
+      }
     }
 
-    // 俯卧撑没到底
-    if (exercise === 'push_up' && this.shallowTurnaround(stage, st)) {
-      score -= 15; errors.push('insufficient_depth');
-    }
+    // 开合跳专项质量
+    if (exercise === 'jumping_jack') {
+      const handsUp = handsAboveShoulders(kp);
+      const stance = angles.stanceWidth;
+      const sw = shoulderWidthKp(kp);
+      const ratio = stance && sw ? stance / sw : 0;
 
-    // 平板支撑身体不直
-    if (exercise === 'plank' && angles.bodyLineAngle !== null && angles.bodyLineAngle > 18) {
-      score -= 25; errors.push('body_line_not_straight');
-    }
-
-    // 开合跳在过渡态
-    if (exercise === 'jumping_jack' && stage === 'transition') {
-      score -= 10; warnings.push('range_not_clear');
+      // 手臂没举过头
+      if (stage === 'open' && !handsUp) {
+        score -= 20; errors.push('arms_not_raised');
+      }
+      // 腿没分够（在 open 阶段站距不够宽）
+      if (stage === 'open' && ratio > 0 && ratio < 1.3) {
+        score -= 15; errors.push('legs_not_wide_enough');
+      }
+      // 闭合时手臂没放下
+      if (stage === 'closed' && handsUp) {
+        score -= 10; warnings.push('arms_not_down');
+      }
+      // 手脚不同步（过渡态持续太久 = 不协调）
+      if (stage === 'transition') {
+        score -= 15; warnings.push('not_synchronized');
+      }
+      // 动作幅度不够（open 阶段 ratio 太小，但排除过渡态抖动）
+      if (stage === 'open' && ratio > 0 && ratio < 1.5) {
+        score -= 10; warnings.push('limited_range');
+      }
     }
 
     // 高抬腿没抬够
@@ -794,45 +897,49 @@ export class PoseAlgorithmEngine {
     return stage === 'ascending' && st.hadDownPhase && st.previousStage === 'descending';
   }
 
+  /** 俯卧撑：手肘外扩（肘与身体夹角 < 25°） */
+  private elbowsFlared(cleaning: CleaningResult): boolean {
+    const kp = cleaning.keypoints;
+    const ls = kp.left_shoulder, le = kp.left_elbow, lh = kp.left_hip;
+    const rs = kp.right_shoulder, re = kp.right_elbow, rh = kp.right_hip;
+    if (!isValid(ls) || !isValid(le) || !isValid(lh)) return false;
+    const bodyVec = { x: lh.x - ls.x, y: lh.y - ls.y };
+    const elbowVec = { x: le.x - ls.x, y: le.y - ls.y };
+    const bodyLen = Math.hypot(bodyVec.x, bodyVec.y);
+    const elbowLen = Math.hypot(elbowVec.x, elbowVec.y);
+    if (bodyLen === 0 || elbowLen === 0) return false;
+    const dot = (elbowVec.x * bodyVec.x + elbowVec.y * bodyVec.y) / (bodyLen * elbowLen);
+    const angle = Math.acos(Math.max(-1, Math.min(1, dot))) * (180 / Math.PI);
+    return angle > 65; // 肘与躯干夹角 > 65° = 外扩
+  }
+
+  /** 俯卧撑：头往下掉（鼻子 y > 肩中线 y） */
+  private headDropping(cleaning: CleaningResult): boolean {
+    const kp = cleaning.keypoints;
+    const nose = kp.left_elbow; // 鼻子是 index 0，不在 JOINT_MAP 里，用肩膀代替
+    const ls = kp.left_shoulder, rs = kp.right_shoulder;
+    if (!isValid(ls) || !isValid(rs)) return false;
+    const midShoulderY = (ls.y + rs.y) / 2;
+    // 简化：用耳朵位置判断，或者跳过（因为 JOINT_MAP 没有鼻子）
+    // 实际用躯干角度：身体前倾 < 25° 才算正确
+    return false; // MediaPipe lite 没有面部关键点，暂不检测
+  }
+
+  /** 平板支撑：肩膀前移到肘关节前方 */
+  private shouldersForward(cleaning: CleaningResult): boolean {
+    const kp = cleaning.keypoints;
+    const ls = kp.left_shoulder, le = kp.left_elbow;
+    const rs = kp.right_shoulder, re = kp.right_elbow;
+    const lOk = isValid(ls) && isValid(le) && ls.x > le.x + 0.05;
+    const rOk = isValid(rs) && isValid(re) && rs.x > re.x + 0.05;
+    return lOk || rOk; // 任何一侧肩膀在肘前 = 前移
+  }
+
   private pushUpHipsSag(kp: Record<string, CleanKP>): boolean {
     const shoulder = midKP(kp, 'shoulder'), hip = midKP(kp, 'hip'), ankle = midKP(kp, 'ankle');
     if (!isValid(shoulder) || !isValid(hip) || !isValid(ankle)) return false;
     const lineY = (shoulder.y + ankle.y) / 2;
     return hip.y > lineY + Math.max(0.05, Math.abs(ankle.y - shoulder.y) * 0.25);
-  }
-
-  private isBodyHorizontal(kp: Record<string, CleanKP>): boolean {
-    const shoulder = midKP(kp, 'shoulder');
-    const ankle = midKP(kp, 'ankle');
-    if (!isValid(shoulder) || !isValid(ankle)) return false;
-    const dx = Math.abs(shoulder.x - ankle.x);
-    const dy = Math.abs(shoulder.y - ankle.y);
-    return dx > 0.18 && dy / Math.max(dx, 0.0001) <= 0.75;
-  }
-
-  private isPushUpPosition(cleaning: CleaningResult, angles: JointAngles): boolean {
-    const kp = cleaning.keypoints;
-    const shoulder = midKP(kp, 'shoulder');
-    const hip = midKP(kp, 'hip');
-    const ankle = midKP(kp, 'ankle');
-    if (!isValid(shoulder) || !isValid(hip) || !isValid(ankle)) return false;
-    if (cleaning.confidenceMean < 0.55 || cleaning.abnormalFrame) return false;
-
-    const bodyDx = Math.abs(shoulder.x - ankle.x);
-    const bodyDy = Math.abs(shoulder.y - ankle.y);
-    const bodySpan = Math.hypot(bodyDx, bodyDy);
-    if (bodySpan < 0.25) return false;
-
-    // 站立时身体主轴接近竖直；俯卧撑侧视时肩-踝主轴应明显更接近水平。
-    const horizontalEnough = this.isBodyHorizontal(kp);
-    const straightEnough = angles.bodyLineAngle !== null && angles.bodyLineAngle <= 28;
-
-    const visibleWrists = [kp.left_wrist, kp.right_wrist].filter(isValid);
-    const visibleElbows = [kp.left_elbow, kp.right_elbow].filter(isValid);
-    const hasArmSupport = visibleWrists.length > 0 && visibleElbows.length > 0
-      && visibleWrists.some(wrist => wrist.y >= shoulder.y - bodySpan * 0.35);
-
-    return horizontalEnough && straightEnough && hasArmSupport;
   }
 
   private isLeftRightUnbalanced(kp: Record<string, CleanKP>): boolean {
@@ -871,4 +978,79 @@ export class PoseAlgorithmEngine {
       `TrunkLean: ${angles.trunkForwardLean}. Stance: ${angles.stanceWidth}.`,
     ].join(' ');
   }
+}
+
+// ─── 跟练模式辅助：直接从 Landmark[] 计算 JointAngles ────
+
+/** 将 MediaPipe landmarks 数组映射到名称索引的简单关键点记录 */
+function lmToKp(landmarks: Landmark[]): Record<number, { x: number; y: number; conf: number }> {
+  const map: Record<number, { x: number; y: number; conf: number }> = {};
+  for (let i = 0; i < landmarks.length; i++) {
+    const lm = landmarks[i];
+    map[i] = { x: lm.x, y: lm.y, conf: lm.visibility ?? 1 };
+  }
+  return map;
+}
+
+/** 直接从 Landmark[] 计算所有关节角度，无需完整清洗流水线 */
+export function computeAnglesFromLandmarks(landmarks: Landmark[]): JointAngles {
+  const kp = lmToKp(landmarks);
+
+  const get = (idx: number): { x: number; y: number; valid: boolean; confidence: number; interpolated: boolean } | undefined => {
+    const p = kp[idx];
+    if (!p || p.conf < 0.3) return undefined;
+    return { x: p.x, y: p.y, valid: true, confidence: p.conf, interpolated: false };
+  };
+
+  // MediaPipe 索引: 11=左肩, 12=右肩, 13=左肘, 14=右肘, 15=左腕, 16=右腕
+  //                  23=左髋, 24=右髋, 25=左膝, 26=右膝, 27=左踝, 28=右踝
+  const leftShoulder = get(11), rightShoulder = get(12);
+  const leftElbow = get(13), rightElbow = get(14);
+  const leftWrist = get(15), rightWrist = get(16);
+  const leftHip = get(23), rightHip = get(24);
+  const leftKnee = get(25), rightKnee = get(26);
+  const leftAnkle = get(27), rightAnkle = get(28);
+
+  const leftKneeAngle = calcAngle(leftHip, leftKnee, leftAnkle);
+  const rightKneeAngle = calcAngle(rightHip, rightKnee, rightAnkle);
+  const leftHipAngle = calcAngle(leftShoulder, leftHip, leftKnee);
+  const rightHipAngle = calcAngle(rightShoulder, rightHip, rightKnee);
+  const leftElbowAngle = calcAngle(leftShoulder, leftElbow, leftWrist);
+  const rightElbowAngle = calcAngle(rightShoulder, rightElbow, rightWrist);
+  const leftShoulderAngle = calcAngle(leftElbow, leftShoulder, leftHip);
+  const rightShoulderAngle = calcAngle(rightElbow, rightShoulder, rightHip);
+
+  const kneeAngle = avgDefined(leftKneeAngle, rightKneeAngle);
+  const hipAngle = avgDefined(leftHipAngle, rightHipAngle);
+
+  // 躯干角度
+  const shoulderMid = midKP({ left_shoulder: leftShoulder as any, right_shoulder: rightShoulder as any } as any, 'shoulder');
+  const hipMid = midKP({ left_hip: leftHip as any, right_hip: rightHip as any } as any, 'hip');
+  const ankleMid = midKP({ left_ankle: leftAnkle as any, right_ankle: rightAnkle as any } as any, 'ankle');
+  const trunkAngle = calcAngle(shoulderMid as any, hipMid as any, ankleMid as any);
+  const bodyLineAngle = trunkAngle !== null ? 180 - trunkAngle : null;
+
+  // 躯干前倾
+  let trunkForwardLean: number | null = null;
+  if (isValid(shoulderMid as any) && isValid(hipMid as any)) {
+    trunkForwardLean = Math.atan(
+      Math.abs(shoulderMid!.x - hipMid!.x) / Math.max(0.001, Math.abs(shoulderMid!.y - hipMid!.y))
+    ) * (180 / Math.PI);
+  }
+
+  // 站距
+  let stanceWidth: number | null = null;
+  if (isValid(leftAnkle as any) && isValid(rightAnkle as any)) {
+    stanceWidth = Math.abs(leftAnkle!.x - rightAnkle!.x);
+  }
+
+  return {
+    kneeAngle: r2(kneeAngle), hipAngle: r2(hipAngle),
+    trunkAngle: r2(trunkAngle), trunkForwardLean: r2(trunkForwardLean),
+    leftKneeAngle: r2(leftKneeAngle), rightKneeAngle: r2(rightKneeAngle),
+    leftHipAngle: r2(leftHipAngle), rightHipAngle: r2(rightHipAngle),
+    leftElbowAngle: r2(leftElbowAngle), rightElbowAngle: r2(rightElbowAngle),
+    leftShoulderAngle: r2(leftShoulderAngle), rightShoulderAngle: r2(rightShoulderAngle),
+    bodyLineAngle: r2(bodyLineAngle), stanceWidth: r2(stanceWidth),
+  };
 }

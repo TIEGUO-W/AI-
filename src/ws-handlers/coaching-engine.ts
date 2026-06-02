@@ -33,7 +33,6 @@ const WARNING_MESSAGES: Record<string, string> = {
   movement_too_fast: '动作太快，控制节奏',
   left_right_unbalanced: '左右不对称',
   low_keypoint_confidence: '检测不稳定',
-  not_push_up_position: '请先进入俯卧撑支撑姿态',
 };
 
 const STAGE_MESSAGES: Record<string, string> = {

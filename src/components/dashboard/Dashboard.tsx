@@ -5,9 +5,10 @@ import LeftPanel from './LeftPanel';
 import RightPanel, { EXERCISE_LABELS } from './RightPanel';
 import CustomPlanModal from './CustomPlanModal';
 import WorkoutSummaryModal from './WorkoutSummaryModal';
-import type { DashboardData, CoachPersonality, CoachVoice, Workout, Biometrics } from '@/types/dashboard';
+import CoachVideoUploader from './CoachVideoUploader';
+import type { DashboardData, CoachPersonality, CoachVoice, Workout, Biometrics, ChatMessage } from '@/types/dashboard';
 import { mockData } from '@/data/mockData';
-import { getCoachMessage } from '@/utils/coachVoice';
+
 import { triggerHighScore, triggerLowScore, triggerWorkoutComplete } from '@/utils/confettiEffects';
 import {
   createWsConnection,
@@ -16,8 +17,7 @@ import {
   type Landmark,
   type AlgorithmUpdatePayload,
   type TTSReadyPayload,
-  type RemoteFramePayload,
-  type RpiStatusPayload,
+  type FrontendEffect,
 } from '@/lib/ws-client';
 
 // ─── MediaPipe Pose connections ─────────────────────
@@ -31,7 +31,7 @@ const POSE_CONNECTIONS: Array<[number, number]> = [
 
 const MP_VISION_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm';
 
-type SourceMode = 'local' | 'remote';
+type SourceMode = 'local';
 
 function getSkeletonColor(quality: 'good' | 'warning' | 'error'): string {
   switch (quality) {
@@ -44,24 +44,6 @@ function getSkeletonColor(quality: 'good' | 'warning' | 'error'): string {
 interface WorkoutSnapshot {
   workout: Workout;
   biometrics: Biometrics;
-}
-
-interface SensorSnapshot {
-  heartRate?: number | null;
-  steps?: number | null;
-  activeEnergy?: number | null;
-  restingHeartRate?: number | null;
-  hrv?: number | null;
-  sleepHours?: number | null;
-  recoveryIndex?: number | null;
-  temp?: number | null;
-  humidity?: number | null;
-  source?: 'apple_health' | 'manual';
-  updatedAt: number | null;
-}
-
-function normalizeExerciseForBackend(exercise: string): string {
-  return exercise;
 }
 
 export default function Dashboard() {
@@ -77,70 +59,252 @@ export default function Dashboard() {
   const [voice, setVoice] = useState<CoachVoice>('female_soft');
   const [planModalOpen, setPlanModalOpen] = useState(false);
   const [summaryModalOpen, setSummaryModalOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [snapshot, setSnapshot] = useState<WorkoutSnapshot | null>(null);
   const [durationSeconds, setDurationSeconds] = useState(0);
   const startTimeRef = useRef(Date.now());
 
   // PoseCoach state
-  const [source, setSource] = useState<SourceMode>('local');
   const [isRunning, setIsRunning] = useState(false);
-  const [selectedExercise, setSelectedExercise] = useState('auto');
+  const [selectedExercise, setSelectedExercise] = useState('squat');
   const [wsConnected, setWsConnected] = useState(false);
   const [repCount, setRepCount] = useState(0);
   const [detectedExercise, setDetectedExercise] = useState('');
+  const [realHeartRate, setRealHeartRate] = useState<number | null>(null);
+  const healthDataRef = useRef<any>(null);
   const [quality, setQuality] = useState<'good' | 'warning' | 'error'>('warning');
+  const [exerciseEffect, setExerciseEffect] = useState<FrontendEffect>(null);
   const [poseDetected, setPoseDetected] = useState(false);
   const [modelReady, setModelReady] = useState(false);
   const [loadStage, setLoadStage] = useState('');
   const [loadError, setLoadError] = useState('');
-  const [remoteFps, setRemoteFps] = useState(0);
-  const [remoteImageUrl, setRemoteImageUrl] = useState('');
-  const [rpiConnected, setRpiConnected] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
+
+  // ─── Sync selectedExercise → display + backend ───────────────
+  const selectedExerciseRef = useRef(selectedExercise);
+  useEffect(() => {
+    if (selectedExercise === selectedExerciseRef.current) return;
+    selectedExerciseRef.current = selectedExercise;
+    // Update display immediately
+    setData(prev => ({
+      ...prev,
+      workout: {
+        ...prev.workout,
+        currentAction: EXERCISE_LABELS[selectedExercise] || selectedExercise,
+      },
+    }));
+    // Reset rep count when switching exercise
+    setRepCount(0);
+    setData(prev => ({
+      ...prev,
+      workout: { ...prev.workout, reps: 0 },
+    }));
+    // Notify backend
+    if (wsRef.current) {
+      wsRef.current.send({ type: 'set_exercise', payload: { exercise: selectedExercise } });
+    }
+  }, [selectedExercise]);
   const [voiceListening, setVoiceListening] = useState(false);
   const [voiceMessages, setVoiceMessages] = useState<{ from: 'user' | 'coach'; text: string }[]>([]);
   const voiceListeningRef = useRef(false);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const recognitionRef = useRef<any>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const frameBufferRef = useRef<Landmark[][]>([]);
+  const pendingVoiceRef = useRef<string[]>([]);
   const lastFrameSentRef = useRef<number>(0);
+  const smoothedScoreRef = useRef<number>(50); // EMA 平滑分数，防止闪烁
 
   // Dashboard data derived from WS state
   const [data, setData] = useState<DashboardData>(() => ({
     ...mockData,
-    workout: { ...mockData.workout, currentAction: '深蹲', targetReps: 20 },
+    workout: { ...mockData.workout, currentAction: '深蹲', targetReps: 0 },
   }));
 
+  // ─── Follow-along state ───────────────────────────────
+  const [followAlongMode, setFollowAlongMode] = useState(false);
+  const [followAlongRecordingId, setFollowAlongRecordingId] = useState<string | null>(null);
+  const [coachVideoUrl, setCoachVideoUrl] = useState<string | null>(null);
+  const [coachTotalFrames, setCoachTotalFrames] = useState(0);
+  const [currentCoachFrame, setCurrentCoachFrame] = useState<{
+    landmarks: Landmark[];
+    perJointStatus: Record<string, string>;
+  } | null>(null);
+  const [matchQuality, setMatchQuality] = useState(0);
+  const coachVideoRef = useRef<HTMLVideoElement>(null);
+  const coachCanvasRef = useRef<HTMLCanvasElement>(null);
+  const pipVideoRef = useRef<HTMLVideoElement>(null);
+  const coachPausedRef = useRef(false);
+
+  // Coach video pause/resume → tell server to stop/start talking
+  useEffect(() => {
+    const video = coachVideoRef.current;
+    if (!video) return;
+    const onPause = () => {
+      if (!coachPausedRef.current) {
+        coachPausedRef.current = true;
+        wsRef.current?.send({ type: 'pause_coaching', payload: {} });
+      }
+    };
+    const onPlay = () => {
+      if (coachPausedRef.current) {
+        coachPausedRef.current = false;
+        wsRef.current?.send({ type: 'resume_coaching', payload: {} });
+      }
+    };
+    video.addEventListener('pause', onPause);
+    video.addEventListener('play', onPlay);
+    return () => { video.removeEventListener('pause', onPause); video.removeEventListener('play', onPlay); };
+  }, [followAlongMode, coachVideoUrl]);
+
   // Speaking state for monster mouth animation
+  // ─── TTS Playback Queue (Priority-aware) ──────────────
   const [isSpeaking, setIsSpeaking] = useState(false);
   const currentCoachMsgRef = useRef('');
+  const audioQueueRef = useRef<Array<{ url: string; priority: 'high' | 'medium' | 'low' }>>([]);
+  const isPlayingRef = useRef(false);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // TTS playback: fetch+blob
-  const playAudioUrl = useCallback(async (audioUrl: string) => {
+  // Strip URLs from coaching text (e.g. audio links from Doubao bot)
+  const stripUrls = (text: string): string =>
+    text.replace(/https?:\/\/\S+/g, '').replace(/\s{2,}/g, ' ').trim();
+
+  // Interrupt current audio (for high priority)
+  const stopCurrentAudio = useCallback(() => {
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current.onended = null;
+      currentAudioRef.current.onerror = null;
+      currentAudioRef.current = null;
+    }
+    isPlayingRef.current = false;
+    setIsSpeaking(false);
+  }, []);
+
+  // Play next audio in queue (priority sorted)
+  const playNextInQueue = useCallback(async () => {
+    if (isPlayingRef.current) return;
+    if (audioQueueRef.current.length === 0) {
+      // TTS queue empty — flush any buffered voice commands
+      flushPendingVoice();
+      return;
+    }
+
+    // Sort by priority: high first
+    audioQueueRef.current.sort((a, b) => {
+      const order = { high: 0, medium: 1, low: 2 };
+      return order[a.priority] - order[b.priority];
+    });
+    const next = audioQueueRef.current.shift();
+    if (!next) return;
+
+    console.log('[TTS] playNextInQueue, priority:', next.priority, 'url:', next.url.substring(0, 60));
+    isPlayingRef.current = true;
+    setIsSpeaking(true);
     try {
-      console.log('[TTS] 开始播放:', audioUrl?.substring(0, 80));
-      setIsSpeaking(true);
-      const resp = await fetch(audioUrl);
+      const resp = await fetch(next.url);
+      if (!resp.ok) {
+        console.error('[TTS] fetch failed:', resp.status, resp.statusText);
+        isPlayingRef.current = false;
+        setIsSpeaking(false);
+        playNextInQueue();
+        return;
+      }
       const blob = await resp.blob();
+      console.log('[TTS] fetched audio blob:', blob.type, blob.size, 'bytes');
+      if (blob.size < 100) {
+        console.error('[TTS] audio blob too small, likely empty:', blob.size);
+        isPlayingRef.current = false;
+        setIsSpeaking(false);
+        playNextInQueue();
+        return;
+      }
       const blobUrl = URL.createObjectURL(blob);
       const audio = new Audio(blobUrl);
+      currentAudioRef.current = audio;
       audio.onended = () => {
         URL.revokeObjectURL(blobUrl);
+        currentAudioRef.current = null;
+        isPlayingRef.current = false;
         setIsSpeaking(false);
-        console.log('[TTS] 播放结束');
+        console.log('[TTS] audio onended, playing next if any');
+        playNextInQueue();
       };
       audio.onerror = () => {
+        URL.revokeObjectURL(blobUrl);
+        currentAudioRef.current = null;
+        isPlayingRef.current = false;
         setIsSpeaking(false);
-        console.error('[TTS] 音频播放出错');
+        console.log('[TTS] audio onerror');
+        playNextInQueue();
       };
       await audio.play();
-      console.log('[TTS] blob 播放成功');
-    } catch (e) {
+      console.log('[TTS] audio.play() started');
+    } catch (err) {
+      console.error('[TTS] playNextInQueue error:', err);
+      // Mobile autoplay policy: if play() was denied, try unlocking and retry once
+      if (err instanceof DOMException && (err.name === 'NotAllowedError' || err.name === 'AbortError')) {
+        console.log('[TTS] Autoplay blocked, attempting unlock...');
+        unlockMobileAudio();
+        // Retry after a short delay
+        const retryUrl = next.url;
+        setTimeout(async () => {
+          try {
+            const resp2 = await fetch(retryUrl);
+            const blob2 = await resp2.blob();
+            const blobUrl2 = URL.createObjectURL(blob2);
+            const audio2 = new Audio(blobUrl2);
+            currentAudioRef.current = audio2;
+            isPlayingRef.current = true;
+            setIsSpeaking(true);
+            audio2.onended = () => {
+              URL.revokeObjectURL(blobUrl2);
+              currentAudioRef.current = null;
+              isPlayingRef.current = false;
+              setIsSpeaking(false);
+              playNextInQueue();
+            };
+            audio2.onerror = () => {
+              URL.revokeObjectURL(blobUrl2);
+              currentAudioRef.current = null;
+              isPlayingRef.current = false;
+              setIsSpeaking(false);
+              playNextInQueue();
+            };
+            await audio2.play();
+            console.log('[TTS] Retry audio.play() succeeded');
+          } catch {
+            currentAudioRef.current = null;
+            isPlayingRef.current = false;
+            setIsSpeaking(false);
+            playNextInQueue();
+          }
+        }, 500);
+        return;
+      }
+      currentAudioRef.current = null;
+      isPlayingRef.current = false;
       setIsSpeaking(false);
-      console.error('[TTS] blob 播放失败:', e);
+      playNextInQueue();
     }
   }, []);
+
+  // Flush buffered voice commands after TTS queue is empty
+  const flushPendingVoice = useCallback(() => {
+    // No longer buffering — voice commands are sent immediately
+  }, []);
+
+  // Enqueue audio URL with priority
+  const enqueueAudio = useCallback((audioUrl: string, priority: 'high' | 'medium' | 'low' = 'medium') => {
+    console.log('[TTS] enqueueAudio, priority:', priority, 'queue:', audioQueueRef.current.length, 'isPlaying:', isPlayingRef.current);
+    if (priority === 'high' && isPlayingRef.current) {
+      // High priority: interrupt current audio and play immediately
+      stopCurrentAudio();
+      audioQueueRef.current.unshift({ url: audioUrl, priority });
+    } else {
+      audioQueueRef.current.push({ url: audioUrl, priority });
+    }
+    if (!isPlayingRef.current) {
+      playNextInQueue();
+    }
+  }, [playNextInQueue, stopCurrentAudio]);
 
   // ─── WS Message Handler ──────────────────────────────
   const handleWsMessage = useCallback((msg: WsMessage) => {
@@ -154,27 +318,35 @@ export default function Dashboard() {
         setRepCount(p.repCount);
         setDetectedExercise(p.exercise);
         setQuality(p.quality);
+        if (p.effect) setExerciseEffect(p.effect);
+        // EMA 平滑分数，防止骨架抖动导致数字闪烁
+        const rawScore = p.qualityScore ?? (p.quality === 'good' ? 90 : p.quality === 'warning' ? 70 : 40);
+        smoothedScoreRef.current = smoothedScoreRef.current + 0.15 * (rawScore - smoothedScoreRef.current);
+        const displayScore = Math.round(smoothedScoreRef.current);
         setData(prev => ({
           ...prev,
           workout: {
             ...prev.workout,
             currentAction: EXERCISE_LABELS[p.exercise] || p.exercise || prev.workout.currentAction,
-            reps: p.repCount,
+            reps: Math.max(prev.workout.reps, p.repCount),
             isFormDeformed: p.quality === 'error',
-            score: p.qualityScore ?? (p.quality === 'good' ? 90 : p.quality === 'warning' ? 70 : 40),
+            score: displayScore,
           },
         }));
         break;
       }
       case 'rep_completed': {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const p = msg.payload as { repCount: number; effect: unknown; quality: number };
+        const p = msg.payload as AlgorithmUpdatePayload;
+        // 用 EMA 平滑，但完成动作时偏重本次分数
+        if (p.qualityScore != null) {
+          smoothedScoreRef.current = smoothedScoreRef.current + 0.3 * (p.qualityScore - smoothedScoreRef.current);
+        }
         setData(prev => ({
           ...prev,
           workout: {
             ...prev.workout,
-            reps: p.repCount,
-            score: p.quality ?? prev.workout.score,
+            reps: Math.max(prev.workout.reps, p.repCount),
+            score: Math.round(smoothedScoreRef.current),
           },
         }));
         break;
@@ -184,7 +356,9 @@ export default function Dashboard() {
         setRepCount(fb.repCount);
         setDetectedExercise(fb.exercise);
         setQuality(fb.quality);
-        const coachMsg = fb.encouragement || (fb.tips.length > 0 ? fb.tips[0] : '');
+        if (fb.effect) setExerciseEffect(fb.effect);
+        const rawMsg = fb.encouragement || (fb.tips.length > 0 ? fb.tips[0] : '');
+        const coachMsg = stripUrls(rawMsg);
         if (coachMsg) {
           lastCoachMsgTimeRef.current = Date.now();
           currentCoachMsgRef.current = coachMsg;
@@ -194,9 +368,11 @@ export default function Dashboard() {
           workout: {
             ...prev.workout,
             currentAction: EXERCISE_LABELS[fb.exercise] || fb.exercise || prev.workout.currentAction,
-            reps: fb.repCount,
+            reps: Math.max(prev.workout.reps, fb.repCount),
             isFormDeformed: fb.quality === 'error',
-            score: prev.workout.score,
+            score: fb.qualityScore != null
+              ? Math.round(smoothedScoreRef.current = smoothedScoreRef.current + 0.3 * (fb.qualityScore - smoothedScoreRef.current))
+              : prev.workout.score,
           },
           assistant: {
             message: coachMsg || prev.assistant.message,
@@ -204,50 +380,133 @@ export default function Dashboard() {
             modelId: prev.assistant.modelId,
           },
         }));
+        if (coachMsg) {
+          setChatMessages(prev => [...prev.slice(-19), { from: 'coach' as const, text: coachMsg, timestamp: Date.now() }]);
+        }
         break;
       }
       case 'tts_ready': {
         const tts = msg.payload as TTSReadyPayload;
-        console.log('[TTS] 收到 tts_ready:', tts.audioUrl?.substring(0, 80));
-        playAudioUrl(tts.audioUrl);
-        break;
-      }
-      case 'remote_frame': {
-        const frame = msg.payload as RemoteFramePayload;
-        setRemoteImageUrl(`data:image/jpeg;base64,${frame.image}`);
-        setRemoteFps(prev => prev + 1);
-        break;
-      }
-      case 'rpi_status': {
-        const status = msg.payload as RpiStatusPayload;
-        setRpiConnected(status.connected);
-        break;
-      }
-      case 'voice_recognized': {
-        const p = msg.payload as { text?: string };
-        const text = p.text;
-        if (text) {
-          setVoiceMessages(prev => [...prev.slice(-9), { from: 'user', text }]);
+        console.log('[TTS] tts_ready received, audioUrl:', tts.audioUrl?.substring(0, 80));
+        if (tts.audioUrl) {
+          const priority = tts.priority || 'medium';
+          enqueueAudio(tts.audioUrl, priority);
         }
         break;
       }
+      case 'voice_command_result':
       case 'voice_reply': {
-        const p = msg.payload as { text?: string };
-        const text = p.text;
-        if (text) {
-          setVoiceMessages(prev => [...prev.slice(-9), { from: 'coach', text }]);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = msg.payload as any;
+        if (p.reply || p.text) {
+          const replyText = stripUrls(p.reply || p.text);
+          setVoiceMessages(prev => [...prev.slice(-9), { from: 'coach', text: replyText }]);
+          setData(prev => ({
+            ...prev,
+            assistant: { ...prev.assistant, message: replyText },
+          }));
+          if (replyText) {
+            setChatMessages(prev => [...prev.slice(-19), { from: 'coach' as const, text: replyText, timestamp: Date.now() }]);
+          }
+        }
+        break;
+      }
+      case 'voice_recognized': {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = msg.payload as any;
+        if (p.text) {
+          setVoiceMessages(prev => [...prev.slice(-9), { from: 'user', text: p.text }]);
+          setChatMessages(prev => [...prev.slice(-19), { from: 'user' as const, text: p.text, timestamp: Date.now() }]);
         }
         break;
       }
       case 'voice_reply_tts': {
-        const p = msg.payload as { audioUrl?: string };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = msg.payload as any;
         if (p.audioUrl) {
-          playAudioUrl(p.audioUrl);
+          enqueueAudio(p.audioUrl, 'high'); // voice replies are always high priority
         }
         break;
       }
+      case 'heart_rate_update': {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const hrPayload = msg.payload as any;
+        if (hrPayload.heartRate) {
+          setRealHeartRate(hrPayload.heartRate);
+        }
+        break;
+      }
+      // ── 跟练模式 ──────────────────────────────────
+      case 'follow_along_started': {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = msg.payload as any;
+        setFollowAlongMode(true);
+        setFollowAlongRecordingId(p.recordingId);
+        setCoachVideoUrl(p.coachVideoUrl);
+        setCoachTotalFrames(p.totalFrames);
+        setMatchQuality(100);
+        // Start coach video playback
+        setTimeout(() => {
+          coachVideoRef.current?.play().catch(() => {});
+        }, 100);
+        break;
+      }
+      case 'comparison_update': {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = msg.payload as any;
+        setMatchQuality(p.matchQuality ?? 0);
+        setData(prev => ({
+          ...prev,
+          workout: {
+            ...prev.workout,
+            score: p.userScore != null
+              ? Math.round(smoothedScoreRef.current = smoothedScoreRef.current + 0.15 * (p.userScore - smoothedScoreRef.current))
+              : prev.workout.score,
+          },
+        }));
+        break;
+      }
+      case 'coach_frame': {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = msg.payload as any;
+        setCurrentCoachFrame({
+          landmarks: p.landmarks,
+          perJointStatus: p.perJointStatus || {},
+        });
+        break;
+      }
+      case 'follow_along_ended': {
+        setFollowAlongMode(false);
+        setFollowAlongRecordingId(null);
+        setCoachVideoUrl(null);
+        setCurrentCoachFrame(null);
+        setMatchQuality(0);
+        break;
+      }
     }
-  }, [playAudioUrl]);
+  }, [enqueueAudio]);
+
+  // ─── Lock body scroll on dashboard ─────────────────────────────
+  useEffect(() => {
+    document.body.classList.add('home-dashboard');
+    return () => { document.body.classList.remove('home-dashboard'); };
+  }, []);
+
+  // ─── Fetch health profile for AI plan modal ──────────────────
+  useEffect(() => {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    const fetchHealth = async () => {
+      try {
+        const res = await fetch(`/api/health?sessionId=${encodeURIComponent(sid)}`);
+        const data = await res.json();
+        if (data.health) healthDataRef.current = data.health;
+      } catch { /* ignore */ }
+    };
+    fetchHealth();
+    const iv = setInterval(fetchHealth, 15000);
+    return () => clearInterval(iv);
+  }, []);
 
   // ─── Connect WS ──────────────────────────────────────
   useEffect(() => {
@@ -270,58 +529,17 @@ export default function Dashboard() {
       },
     });
     wsRef.current = ws;
+    // Send health session ID so heart rate events are routed correctly
+    const healthSid = localStorage.getItem('health_session_id');
+    if (healthSid) {
+      ws.send({ type: 'set_session', payload: { sessionId: healthSid } });
+    }
     return () => { ws.close(); };
   }, [handleWsMessage]);
 
-  // ─── Apple Health / sensor bridge ─────────────────────────────
-  useEffect(() => {
-    let cancelled = false;
-
-    async function refreshSensors() {
-      try {
-        const res = await fetch(`/api/sensor?t=${Date.now()}`, { cache: 'no-store' });
-        if (!res.ok) return;
-        const sensor = await res.json() as SensorSnapshot;
-        if (cancelled || !sensor.updatedAt) return;
-
-        setData(prev => ({
-          ...prev,
-          biometrics: {
-            ...prev.biometrics,
-            ...(typeof sensor.heartRate === 'number' ? { heartRate: Math.round(sensor.heartRate) } : {}),
-            hasLiveHeartRate: typeof sensor.heartRate === 'number',
-            ...(typeof sensor.steps === 'number' ? { steps: Math.round(sensor.steps) } : {}),
-            ...(typeof sensor.activeEnergy === 'number' ? { activeEnergy: Math.round(sensor.activeEnergy) } : {}),
-            ...(typeof sensor.restingHeartRate === 'number' ? { restingHeartRate: Math.round(sensor.restingHeartRate) } : {}),
-            ...(typeof sensor.hrv === 'number' ? { hrv: Math.round(sensor.hrv) } : {}),
-            ...(typeof sensor.sleepHours === 'number' ? { sleepHours: Math.round(sensor.sleepHours * 10) / 10 } : {}),
-            ...(typeof sensor.recoveryIndex === 'number' ? { recoveryIndex: Math.round(sensor.recoveryIndex) } : {}),
-            source: sensor.source ?? 'apple_health',
-            updatedAt: sensor.updatedAt,
-          },
-          environment: {
-            ...prev.environment,
-            ...(typeof sensor.temp === 'number' ? { temp: Math.round(sensor.temp * 10) / 10 } : {}),
-            ...(typeof sensor.humidity === 'number' ? { humidity: Math.round(sensor.humidity) } : {}),
-            sensorUpdatedAt: sensor.updatedAt,
-          },
-        }));
-      } catch (err) {
-        console.warn('[sensor] refresh failed:', err);
-      }
-    }
-
-    refreshSensors();
-    const timer = setInterval(refreshSensors, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, []);
-
   // ─── MediaPipe Pose (local mode) ─────────────────────
   useEffect(() => {
-    if (!isRunning || source !== 'local') return;
+    if (!isRunning) return;
     let cancelled = false;
 
     async function initMediaPipe() {
@@ -367,6 +585,10 @@ export default function Dashboard() {
           await video.play();
           cameraRef.current = stream;
         }
+        // Also set stream on PIP video for follow-along mode
+        if (pipVideoRef.current) {
+          pipVideoRef.current.srcObject = stream;
+        }
         await initMediaPipe();
       } catch (err) {
         if (!cancelled) {
@@ -390,11 +612,11 @@ export default function Dashboard() {
       setModelReady(false);
       setPoseDetected(false);
     };
-  }, [isRunning, source]);
+  }, [isRunning]);
 
   // ─── Pose detection loop ─────────────────────────────
   useEffect(() => {
-    if (!isRunning || source !== 'local' || !modelReady) return;
+    if (!isRunning || !modelReady) return;
     let rafId: number;
     let lastTimestamp = 0;
 
@@ -430,25 +652,90 @@ export default function Dashboard() {
           setPoseDetected(true);
           const lm = result.landmarks[0];
 
-          // Draw connections
-          ctx.lineWidth = 3;
-          ctx.strokeStyle = getSkeletonColor(quality);
-          ctx.lineCap = 'round';
-          for (const [i, j] of POSE_CONNECTIONS) {
-            if (i < lm.length && j < lm.length) {
-              ctx.beginPath();
-              ctx.moveTo(lm[i].x * canvas.width, lm[i].y * canvas.height);
-              ctx.lineTo(lm[j].x * canvas.width, lm[j].y * canvas.height);
-              ctx.stroke();
+          // ── 用户骨架（仅非跟练模式） ──
+          if (!followAlongMode) {
+            const color = getSkeletonColor(quality);
+            ctx.save();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 3;
+            ctx.shadowColor = color;
+            ctx.shadowBlur = 15;
+            ctx.globalAlpha = 0.6;
+            ctx.lineCap = 'round';
+            for (const [i, j] of POSE_CONNECTIONS) {
+              if (i < lm.length && j < lm.length) {
+                ctx.beginPath();
+                ctx.moveTo(lm[i].x * canvas.width, lm[i].y * canvas.height);
+                ctx.lineTo(lm[j].x * canvas.width, lm[j].y * canvas.height);
+                ctx.stroke();
+              }
             }
+            ctx.globalAlpha = 1;
+            ctx.lineWidth = 1.5;
+            ctx.shadowBlur = 6;
+            for (const [i, j] of POSE_CONNECTIONS) {
+              if (i < lm.length && j < lm.length) {
+                ctx.beginPath();
+                ctx.moveTo(lm[i].x * canvas.width, lm[i].y * canvas.height);
+                ctx.lineTo(lm[j].x * canvas.width, lm[j].y * canvas.height);
+                ctx.stroke();
+              }
+            }
+            ctx.shadowBlur = 12;
+            for (const point of lm) {
+              const x = point.x * canvas.width, y = point.y * canvas.height;
+              ctx.beginPath();
+              ctx.arc(x, y, 6, 0, 2 * Math.PI);
+              ctx.fillStyle = color;
+              ctx.globalAlpha = 0.3;
+              ctx.fill();
+              ctx.globalAlpha = 1;
+              ctx.beginPath();
+              ctx.arc(x, y, 3.5, 0, 2 * Math.PI);
+              ctx.fillStyle = color;
+              ctx.fill();
+              ctx.beginPath();
+              ctx.arc(x - 0.7, y - 0.7, 1.2, 0, 2 * Math.PI);
+              ctx.fillStyle = 'rgba(255,255,255,0.6)';
+              ctx.fill();
+            }
+            ctx.restore();
           }
 
-          // Draw joints
-          for (const point of lm) {
-            ctx.beginPath();
-            ctx.arc(point.x * canvas.width, point.y * canvas.height, 4, 0, 2 * Math.PI);
-            ctx.fillStyle = getSkeletonColor(quality);
-            ctx.fill();
+          // ── 跟练模式：只绘制教练骨架（青色），不绘制用户骨架 ──
+          if (followAlongMode) {
+            // Clear user skeleton — don't draw it over coach video
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+          }
+          if (followAlongMode && currentCoachFrame) {
+            const coachLm = currentCoachFrame.landmarks;
+            const coachColor = '#00E5FF';
+            ctx.save();
+            ctx.strokeStyle = coachColor;
+            ctx.lineWidth = 2;
+            ctx.shadowColor = coachColor;
+            ctx.shadowBlur = 8;
+            ctx.globalAlpha = 0.7;
+            ctx.lineCap = 'round';
+            for (const [i, j] of POSE_CONNECTIONS) {
+              if (i < coachLm.length && j < coachLm.length) {
+                ctx.beginPath();
+                ctx.moveTo(coachLm[i].x * canvas.width, coachLm[i].y * canvas.height);
+                ctx.lineTo(coachLm[j].x * canvas.width, coachLm[j].y * canvas.height);
+                ctx.stroke();
+              }
+            }
+            // Coach joints
+            ctx.shadowBlur = 6;
+            for (const point of coachLm) {
+              const x = point.x * canvas.width, y = point.y * canvas.height;
+              ctx.beginPath();
+              ctx.arc(x, y, 3, 0, 2 * Math.PI);
+              ctx.fillStyle = coachColor;
+              ctx.globalAlpha = 0.4;
+              ctx.fill();
+            }
+            ctx.restore();
           }
 
           // Send as pose_frame for real-time coaching + TTS
@@ -465,7 +752,6 @@ export default function Dashboard() {
               payload: {
                 landmarks: wsLandmarks,
                 timestamp: now,
-                exercise: normalizeExerciseForBackend(selectedExercise),
               },
             });
           }
@@ -479,129 +765,118 @@ export default function Dashboard() {
 
     rafId = requestAnimationFrame(detect);
     return () => cancelAnimationFrame(rafId);
-  }, [isRunning, source, modelReady, quality, selectedExercise]);
+  }, [isRunning, modelReady, quality, selectedExercise]);
 
-  // ─── Voice interaction ────────────────────────────────
+  // ─── Voice interaction (MediaRecorder + Backend ASR) ─────
+  // 使用 MediaRecorder 录音 → WS 发 base64 → 后端 ASRClient 识别
+  // 不再依赖 Web Speech API（Google 被墙），国内直连可用
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const pcmBufferRef = useRef<Int16Array[]>([]);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Encode PCM samples to WAV (16-bit mono, 16000Hz)
+  const encodeWAV = (samples: Int16Array, sampleRate: number): ArrayBuffer => {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const writeStr = (offset: number, str: string) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);  // PCM
+    view.setUint16(22, 1, true);  // mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);  // block align
+    view.setUint16(34, 16, true); // bits per sample
+    writeStr(36, 'data');
+    view.setUint32(40, samples.length * 2, true);
+    for (let i = 0; i < samples.length; i++) { view.setInt16(44 + i * 2, samples[i], true); }
+    return buffer;
+  };
+
   useEffect(() => {
-    if (!voiceEnabled || !isRunning) {
-      // Stop listening
-      if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch { /* ignore */ }
-        recognitionRef.current = null;
-      }
+    if (!voiceEnabled) {
+      if (processorRef.current) { processorRef.current.disconnect(); processorRef.current = null; }
+      if (audioCtxRef.current) { audioCtxRef.current.close(); audioCtxRef.current = null; }
       setVoiceListening(false);
       voiceListeningRef.current = false;
+      if (recordingTimerRef.current) { clearInterval(recordingTimerRef.current); recordingTimerRef.current = null; }
+      pcmBufferRef.current = [];
       return;
     }
 
-    // Start Web Speech API
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      console.warn('[Voice] Web Speech API not supported');
-      return;
-    }
+    console.log('[Voice] Requesting microphone access...');
+    navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true } })
+      .then(stream => {
+        console.log('[Voice] Microphone access granted');
+        const audioCtx = new AudioContext({ sampleRate: 16000 });
+        audioCtxRef.current = audioCtx;
+        const source = audioCtx.createMediaStreamSource(stream);
+        const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+        processorRef.current = processor;
 
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = false;
-    recognition.lang = 'zh-CN';
-    recognitionRef.current = recognition;
+        processor.onaudioprocess = (e: AudioProcessingEvent) => {
+          const float32 = e.inputBuffer.getChannelData(0);
+          const int16 = new Int16Array(float32.length);
+          for (let i = 0; i < float32.length; i++) {
+            const s = Math.max(-1, Math.min(1, float32[i]));
+            int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          }
+          pcmBufferRef.current.push(int16);
+        };
 
-    recognition.onresult = (event: { resultIndex: number; results: { length: number; [key: number]: { [key: number]: { transcript: string }; isFinal: boolean } } }) => {
-      const last = event.results[event.results.length - 1];
-      if (last.isFinal) {
-        const text = last[0].transcript.trim();
-        if (text) {
-          setVoiceMessages(prev => [...prev.slice(-9), { from: 'user', text }]);
-          wsRef.current?.send({
-            type: 'voice_command',
-            payload: { text, sessionId: sessionIdRef.current },
-          });
-        }
-      }
-    };
+        source.connect(processor);
+        processor.connect(audioCtx.destination);
+        setVoiceListening(true);
+        voiceListeningRef.current = true;
+        console.log('[Voice] AudioContext recording started, 16kHz mono PCM');
 
-    recognition.onerror = () => {
-      // Auto-restart on error
-      if (voiceListeningRef.current) {
-        try { recognition.start(); } catch { /* ignore */ }
-      }
-    };
-
-    recognition.onend = () => {
-      // Auto-restart if still enabled
-      if (voiceListeningRef.current) {
-        try { recognition.start(); } catch { /* ignore */ }
-      }
-    };
-
-    try {
-      recognition.start();
-      setVoiceListening(true);
-      voiceListeningRef.current = true;
-    } catch (e) {
-      console.error('[Voice] Start failed:', e);
-    }
+        recordingTimerRef.current = setInterval(() => {
+          if (pcmBufferRef.current.length === 0) return;
+          if (!wsRef.current) return;
+          const chunks = [...pcmBufferRef.current];
+          pcmBufferRef.current = [];
+          const totalLen = chunks.reduce((acc, c) => acc + c.length, 0);
+          const merged = new Int16Array(totalLen);
+          let off = 0;
+          for (const c of chunks) { merged.set(c, off); off += c.length; }
+          const wavBuffer = encodeWAV(merged, 16000);
+          const base64 = btoa(String.fromCharCode(...new Uint8Array(wavBuffer)));
+          if (base64.length > 100) {
+            console.log('[Voice] Sending WAV chunk to backend, size:', base64.length);
+            wsRef.current?.send({ type: 'voice_command', payload: { base64Data: base64, sessionId: sessionIdRef.current } });
+          }
+        }, 3000);
+      })
+      .catch(err => {
+        console.error('[Voice] Microphone access denied:', err);
+        setVoiceListening(false);
+        voiceListeningRef.current = false;
+      });
 
     return () => {
-      try { recognition.stop(); } catch { /* ignore */ }
-      recognitionRef.current = null;
+      if (processorRef.current) { processorRef.current.disconnect(); processorRef.current = null; }
+      if (audioCtxRef.current) { audioCtxRef.current.close(); audioCtxRef.current = null; }
+      if (recordingTimerRef.current) { clearInterval(recordingTimerRef.current); recordingTimerRef.current = null; }
+      pcmBufferRef.current = [];
       setVoiceListening(false);
       voiceListeningRef.current = false;
     };
-  }, [voiceEnabled, isRunning]);
+  }, [voiceEnabled]);
 
-  // ─── Demo heart rate fallback (disabled once Apple Health data arrives) ───
-  useEffect(() => {
-    if (!isRunning) return;
-    const interval = setInterval(() => {
-      setData(prev => {
-        if (prev.biometrics.updatedAt) return prev;
-        const baseHR = 75 + (isRunning ? 60 : 0);
-        const variance = Math.floor(Math.random() * 20) - 10;
-        return {
-          ...prev,
-          biometrics: {
-            ...prev.biometrics,
-            heartRate: Math.max(60, Math.min(190, baseHR + variance + repCount)),
-          },
-        };
-      });
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [isRunning, repCount]);
+
+  // Heart rate comes from real Apple Health data via WS (heart_rate_update)
+  // No simulated heart rate — if no real data, show "未连接"
 
   // ─── Coach personality: fallback only when backend is silent ───
   const lastCoachMsgTimeRef = useRef(Date.now());
+  // Track last coaching message time for potential future use
   useEffect(() => {
-    // Update timestamp whenever coaching_feedback arrives
+    lastCoachMsgTimeRef.current = Date.now();
   }, [data.assistant.message]);
-  useEffect(() => {
-    // Only use local coachVoice as fallback when backend hasn't sent a message in 15+ seconds
-    if (!isRunning) return;
-    const interval = setInterval(() => {
-      const timeSinceLastMsg = Date.now() - lastCoachMsgTimeRef.current;
-      if (timeSinceLastMsg < 15000) return; // backend is active, skip local
-      const localMsg = getCoachMessage(
-        data.biometrics.heartRate,
-        data.workout.score,
-        data.workout.currentAction,
-        data.workout.isFormDeformed,
-        personality,
-      );
-      lastCoachMsgTimeRef.current = Date.now();
-      setData(prev => ({
-        ...prev,
-        assistant: {
-          ...prev.assistant,
-          message: localMsg.message,
-          isAlert: localMsg.isAlert,
-        },
-      }));
-    }, 8000);
-    return () => clearInterval(interval);
-  }, [isRunning, personality, data.biometrics.heartRate, data.workout.score, data.workout.currentAction, data.workout.isFormDeformed]);
 
   // ─── Confetti triggers ───────────────────────────────
   const prevScoreRef = useRef(data.workout.score);
@@ -609,6 +884,7 @@ export default function Dashboard() {
   const completedRef = useRef(false);
 
   useEffect(() => {
+    if (followAlongMode) return; // No confetti in follow-along mode
     const prev = prevScoreRef.current;
     const curr = data.workout.score;
     prevScoreRef.current = curr;
@@ -616,9 +892,10 @@ export default function Dashboard() {
       if (curr > 85) triggerHighScore();
       else if (curr < 60) triggerLowScore();
     }
-  }, [data.workout.score]);
+  }, [data.workout.score, followAlongMode]);
 
   useEffect(() => {
+    if (followAlongMode) return; // No confetti in follow-along mode
     const curr = data.workout.reps;
     const prev = prevRepsRef.current;
     prevRepsRef.current = curr;
@@ -637,50 +914,52 @@ export default function Dashboard() {
   }, [data.workout.reps, data.workout.targetReps, data]);
 
   // ─── Handlers ────────────────────────────────────────
-  const handleExerciseChange = useCallback((exercise: string) => {
-    const backendExercise = normalizeExerciseForBackend(exercise);
-    setSelectedExercise(exercise);
-    setRepCount(0);
-    completedRef.current = false;
-    setData(prev => ({
-      ...prev,
-      workout: {
-        ...prev.workout,
-        currentAction: EXERCISE_LABELS[exercise] || EXERCISE_LABELS[backendExercise] || exercise,
-        reps: 0,
-        score: mockData.workout.score,
-        isFormDeformed: false,
-      },
-      assistant: {
-        ...prev.assistant,
-        message: `已切换到${EXERCISE_LABELS[exercise] || EXERCISE_LABELS[backendExercise] || exercise}`,
-        isAlert: false,
-      },
-    }));
-    wsRef.current?.send({
-      type: 'set_exercise',
-      payload: { exercise: backendExercise },
-    });
+  // ─── Mobile Audio Unlock ──────────────────────────────
+  // Mobile browsers require a user gesture before audio can play.
+  // We unlock on the first tap by playing a silent buffer.
+  const audioUnlockedRef = useRef(false);
+  const unlockMobileAudio = useCallback(() => {
+    if (audioUnlockedRef.current) return;
+    try {
+      // Resume any existing suspended AudioContext
+      const existingCtx = (window as unknown as Record<string, unknown>).__lastAudioContext as AudioContext | undefined;
+      if (existingCtx && existingCtx.state === 'suspended') {
+        existingCtx.resume();
+      }
+      // Also create a short silent buffer to unlock iOS
+      const ctx = new AudioContext();
+      (window as unknown as Record<string, unknown>).__lastAudioContext = ctx;
+      const buffer = ctx.createBuffer(1, 1, 22050);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      source.start(0);
+      audioUnlockedRef.current = true;
+      console.log('[Audio] Mobile audio unlocked');
+    } catch { /* ignore */ }
   }, []);
 
   const handleStartWorkout = useCallback(() => {
-    const backendExercise = normalizeExerciseForBackend(selectedExercise);
-    sessionIdRef.current = `session_${Date.now()}`;
+    unlockMobileAudio();
+    // Use health session ID from localStorage so Apple Health data matches
+    const healthSid = typeof window !== 'undefined' ? localStorage.getItem('health_session_id') : null;
+    sessionIdRef.current = healthSid || `session_${Date.now()}`;
     startTimeRef.current = Date.now();
     completedRef.current = false;
+    smoothedScoreRef.current = 50;
     setRepCount(0);
     setIsRunning(true);
     setData(prev => ({
       ...prev,
-      workout: {
-        ...prev.workout,
-        currentAction: EXERCISE_LABELS[selectedExercise] || EXERCISE_LABELS[backendExercise] || selectedExercise,
-        reps: 0,
-      },
+      workout: { ...prev.workout, reps: 0, currentAction: EXERCISE_LABELS[selectedExercise] || selectedExercise },
     }));
     wsRef.current?.send({
+      type: 'set_session',
+      payload: { sessionId: sessionIdRef.current },
+    });
+    wsRef.current?.send({
       type: 'set_exercise',
-      payload: { exercise: backendExercise },
+      payload: { exercise: selectedExercise },
     });
   }, [selectedExercise]);
 
@@ -700,34 +979,85 @@ export default function Dashboard() {
   }, []);
 
   const environment = {
-    ...data.environment,
+    temp: 26,
     aiActive: wsConnected,
     connectionStatus: wsConnected ? 'connected' as const : 'disconnected' as const,
   };
 
+  const handleDashboardClick = useCallback(() => {
+    // Resume any suspended AudioContext on first user interaction
+    unlockMobileAudio();
+  }, []);
+
   return (
-    <div className="flex h-screen w-full bg-cyber-dark scanlines overflow-hidden">
-      {/* LEFT: AI Coach (1/4) */}
-      <div className="w-1/4 flex-shrink-0 flex flex-col">
+    <div className="flex h-screen w-full bg-cyber-dark scanlines overflow-hidden" onClick={handleDashboardClick}>
+      {/* LEFT: AI Coach Panel */}
+      <div className="w-[320px] flex-shrink-0 flex flex-col border-r border-white/[0.03] h-screen">
+        {/* Follow-along upload — fixed at top */}
+        <div className="px-4 pt-4 pb-2 flex-shrink-0">
+          <CoachVideoUploader
+            onUploadComplete={(id, url) => {
+              setFollowAlongRecordingId(id);
+              setCoachVideoUrl(url);
+            }}
+            onStartFollowAlong={(id) => {
+              // Auto-start workout + camera if not already running
+              if (!isRunning) {
+                unlockMobileAudio();
+                const healthSid = typeof window !== 'undefined' ? localStorage.getItem('health_session_id') : null;
+                sessionIdRef.current = healthSid || `session_${Date.now()}`;
+                startTimeRef.current = Date.now();
+                completedRef.current = false;
+                smoothedScoreRef.current = 50;
+                setRepCount(0);
+                setIsRunning(true);
+                setData(prev => ({
+                  ...prev,
+                  workout: { ...prev.workout, reps: 0, currentAction: EXERCISE_LABELS[selectedExercise] || selectedExercise },
+                }));
+                wsRef.current?.send({
+                  type: 'set_session',
+                  payload: { sessionId: sessionIdRef.current },
+                });
+                wsRef.current?.send({
+                  type: 'set_exercise',
+                  payload: { exercise: selectedExercise },
+                });
+              }
+              wsRef.current?.send({
+                type: 'start_follow_along',
+                payload: { recordingId: id },
+              });
+            }}
+            onStopFollowAlong={() => {
+              wsRef.current?.send({
+                type: 'stop_follow_along',
+                payload: {},
+              });
+            }}
+            followAlongActive={followAlongMode}
+          />
+        </div>
         <LeftPanel
-          data={data}
+          data={{ ...data, biometrics: { ...data.biometrics, heartRate: realHeartRate ?? data.biometrics.heartRate } }}
           personality={personality}
           voice={voice}
           onPersonalityChange={setPersonality}
           onVoiceChange={setVoice}
           isSpeaking={isSpeaking}
           coachMessage={currentCoachMsgRef.current}
+          chatMessages={chatMessages}
+          exerciseEffect={exerciseEffect}
+          qualityScore={data.workout.score}
+          repCount={repCount}
         />
       </div>
 
-      {/* CYAN DIVIDER */}
-      <div className="w-px flex-shrink-0 bg-gradient-to-b from-transparent via-cyber-cyan/40 to-transparent shadow-[0_0_6px_rgba(0,229,255,0.15)]" />
-
-      {/* RIGHT: Data + Camera (3/4) */}
+      {/* RIGHT: Data + Camera */}
       <div className="flex-1 flex flex-col min-w-0">
         <RightPanel
           workout={data.workout}
-          biometrics={data.biometrics}
+          biometrics={{ ...data.biometrics, heartRate: realHeartRate ?? 0 }}
           environment={environment}
           connectionError={loadError || undefined}
           onOpenPlanModal={() => setPlanModalOpen(true)}
@@ -736,16 +1066,19 @@ export default function Dashboard() {
           isRunning={isRunning}
           videoRef={videoRef}
           canvasRef={canvasRef}
-          remoteImageUrl={remoteImageUrl}
           selectedExercise={selectedExercise}
-          onExerciseChange={handleExerciseChange}
-          sourceMode={source}
-          onSourceModeChange={setSource}
+          onExerciseChange={setSelectedExercise}
           voiceEnabled={voiceEnabled}
+          voiceListening={voiceListening}
           onVoiceToggle={() => setVoiceEnabled(v => !v)}
           poseDetected={poseDetected}
           modelReady={modelReady}
           loadStage={loadStage}
+          followAlongMode={followAlongMode}
+          matchQuality={matchQuality}
+          coachVideoRef={coachVideoRef}
+          coachVideoUrl={coachVideoUrl}
+          pipVideoRef={pipVideoRef}
         />
       </div>
 
@@ -753,7 +1086,9 @@ export default function Dashboard() {
         open={planModalOpen}
         onClose={() => setPlanModalOpen(false)}
         personality={personality}
-        biometrics={data.biometrics}
+        healthData={healthDataRef.current}
+        currentHR={realHeartRate ?? 0}
+        currentExercise={selectedExercise}
       />
       {snapshot && (
         <WorkoutSummaryModal
