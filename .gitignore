@@ -25,6 +25,7 @@ Thumbs.db
 
 # Logs
 *.log
+.sensor-state.json
 
 # Cache
 .turbo/

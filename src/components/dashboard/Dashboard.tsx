@@ -279,7 +279,7 @@ export default function Dashboard() {
 
     async function refreshSensors() {
       try {
-        const res = await fetch('/api/sensor', { cache: 'no-store' });
+        const res = await fetch(`/api/sensor?t=${Date.now()}`, { cache: 'no-store' });
         if (!res.ok) return;
         const sensor = await res.json() as SensorSnapshot;
         if (cancelled || !sensor.updatedAt) return;
