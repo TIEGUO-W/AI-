@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { calculateRecovery, type RecoveryBreakdown } from '@/lib/health-metrics';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -19,7 +18,6 @@ interface SensorState {
   source?: 'apple_health' | 'manual';
   updatedAt: number | null;
   updatedAtIso?: string | null;
-  recoveryBreakdown?: RecoveryBreakdown;
   lastReceived?: Record<string, unknown>;
 }
 
@@ -67,24 +65,6 @@ function mergeNumber(
   return readFirstNumber(body, keys) ?? null;
 }
 
-function mergeSleepHours(
-  body: Record<string, unknown>,
-  previous: number | null | undefined,
-): number | null | undefined {
-  const direct = mergeNumber(body, ['sleepHours', 'sleep', 'sleep_hours', '睡眠', '睡眠时长'], previous);
-  if (direct !== previous) return direct;
-
-  const minutes = mergeNumber(body, ['sleepMinutes', 'sleep_minutes', '睡眠分钟'], undefined);
-  if (typeof minutes === 'number') return Math.round((minutes / 60) * 10) / 10;
-  if (minutes === null) return null;
-
-  const seconds = mergeNumber(body, ['sleepSeconds', 'sleep_seconds', '睡眠秒数'], undefined);
-  if (typeof seconds === 'number') return Math.round((seconds / 3600) * 10) / 10;
-  if (seconds === null) return null;
-
-  return previous;
-}
-
 async function readBody(request: NextRequest): Promise<Record<string, unknown>> {
   const contentType = request.headers.get('content-type') || '';
 
@@ -118,14 +98,14 @@ export async function POST(request: NextRequest) {
     const body = await readBody(request);
     const sensorState = await readSensorState();
     const updatedAt = Date.now();
-    const draft: SensorState = {
+    const next: SensorState = {
       ...sensorState,
       heartRate: mergeNumber(body, ['heartRate', 'hr', 'heart_rate', '心率'], sensorState.heartRate),
       steps: mergeNumber(body, ['steps', 'stepCount', 'step_count', '步数'], sensorState.steps),
       activeEnergy: mergeNumber(body, ['activeEnergy', 'calories', 'energy', '活动能量', '卡路里'], sensorState.activeEnergy),
       restingHeartRate: mergeNumber(body, ['restingHeartRate', 'restingHR', 'resting_hr', '静息心率'], sensorState.restingHeartRate),
       hrv: mergeNumber(body, ['hrv', 'HRV', '心率变异性'], sensorState.hrv),
-      sleepHours: mergeSleepHours(body, sensorState.sleepHours),
+      sleepHours: mergeNumber(body, ['sleepHours', 'sleep', 'sleep_hours', '睡眠', '睡眠时长'], sensorState.sleepHours),
       recoveryIndex: mergeNumber(body, ['recoveryIndex', 'recovery', '恢复指数'], sensorState.recoveryIndex),
       temp: mergeNumber(body, ['temp', 'temperature', '温度'], sensorState.temp),
       humidity: mergeNumber(body, ['humidity', '湿度'], sensorState.humidity),
@@ -133,12 +113,6 @@ export async function POST(request: NextRequest) {
       updatedAt,
       updatedAtIso: new Date(updatedAt).toISOString(),
       lastReceived: body,
-    };
-    const recovery = calculateRecovery(draft);
-    const next: SensorState = {
-      ...draft,
-      recoveryIndex: recovery.recoveryIndex,
-      recoveryBreakdown: recovery,
     };
 
     await writeSensorState(next);

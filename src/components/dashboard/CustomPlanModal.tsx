@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Biometrics, CoachPersonality } from '@/types/dashboard';
 import { PERSONALITY_LABELS, PERSONALITY_EMOJI } from '@/utils/coachVoice';
-import { calculateRecovery } from '@/lib/health-metrics';
 
 interface CustomPlanModalProps {
   open: boolean;
@@ -28,50 +27,18 @@ const SLEEP_ADVICE: Record<string, string> = {
   good: '睡眠充足，完全恢复',
 };
 
-const RECOVERY_ADVICE = {
-  recover: {
-    label: '恢复优先',
-    text: '今日不宜冲击极限，以恢复性训练为主。',
-    plan: [
-      { emoji: '🧘', title: '动态拉伸', desc: '全身关节活化 · 15 分钟', color: 'from-green-400/20 to-cyan-400/10 border-green-700/30' },
-      { emoji: '🚶', title: '低强度有氧', desc: '快走或骑行 · 心率 ≤ 120 BPM · 20 分钟', color: 'from-blue-400/20 to-purple-500/10 border-blue-700/30' },
-      { emoji: '🧊', title: '筋膜放松', desc: '泡沫轴全身滚动 · 10 分钟', color: 'from-purple-400/20 to-pink-500/10 border-purple-700/30' },
-    ],
-  },
-  moderate: {
-    label: '适中训练',
-    text: '今天适合中等强度训练，注意控制组间休息。',
-    plan: [
-      { emoji: '🧘', title: '动态热身', desc: '髋膝踝激活 · 10 分钟', color: 'from-green-400/20 to-cyan-400/10 border-green-700/30' },
-      { emoji: '🏋️', title: '技术训练', desc: '自重深蹲或俯卧撑 · 3 组', color: 'from-cyan-400/20 to-blue-500/10 border-cyber-cyan/30' },
-      { emoji: '🚶', title: '轻有氧收尾', desc: '心率 ≤ 130 BPM · 15 分钟', color: 'from-blue-400/20 to-purple-500/10 border-blue-700/30' },
-    ],
-  },
-  train: {
-    label: '状态良好',
-    text: '恢复状态不错，可以安排正常训练，但仍需保持动作质量。',
-    plan: [
-      { emoji: '🔥', title: '充分热身', desc: '动态拉伸 + 激活 · 12 分钟', color: 'from-orange-400/20 to-red-500/10 border-orange-700/30' },
-      { emoji: '🏋️', title: '主训练', desc: '目标动作 · 4 组 × 12-15 次', color: 'from-cyan-400/20 to-blue-500/10 border-cyber-cyan/30' },
-      { emoji: '🧊', title: '拉伸恢复', desc: '训练后放松 · 10 分钟', color: 'from-purple-400/20 to-pink-500/10 border-purple-700/30' },
-    ],
-  },
-} as const;
-
 const DEMO_DATA_LABEL = '演示数据';
 
 export default function CustomPlanModal({ open, onClose, personality, biometrics }: CustomPlanModalProps) {
   const [step, setStep] = useState<Step>('syncing');
   const [syncProgress, setSyncProgress] = useState(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const recovery = biometrics.recoveryBreakdown ?? calculateRecovery(biometrics);
-  const recoveryAdvice = RECOVERY_ADVICE[recovery.recommendation];
   const metrics = {
     sleepHours: biometrics.sleepHours ?? MOCK_METRICS.sleepHours,
-    sleepQuality: recovery.sleepQuality,
+    sleepQuality: (biometrics.sleepHours ?? MOCK_METRICS.sleepHours) < 6 ? 'poor' as const : 'fair' as const,
     restingHR: biometrics.restingHeartRate ?? biometrics.heartRate ?? MOCK_METRICS.restingHR,
     hrv: biometrics.hrv ?? MOCK_METRICS.hrv,
-    recoveryIndex: recovery.recoveryIndex,
+    recoveryIndex: biometrics.recoveryIndex ?? MOCK_METRICS.recoveryIndex,
     lastWorkout: MOCK_METRICS.lastWorkout,
     sourceLabel: biometrics.source === 'apple_health' ? 'Apple Health' : DEMO_DATA_LABEL,
   };
@@ -194,7 +161,7 @@ export default function CustomPlanModal({ open, onClose, personality, biometrics
                         {label === '心率变异性 (HRV)' ? `${metrics.hrv} ms` :
                          label === '静息心率' ? `${metrics.restingHR} BPM` :
                          label === '睡眠分析' ? `${metrics.sleepHours} h` :
-                         label === '运动负荷' ? recovery.loadLevel : `${metrics.recoveryIndex}%`}
+                         label === '运动负荷' ? '中' : `${metrics.recoveryIndex}%`}
                       </span>
                     ) : (
                       <span className="inline-block w-12 h-3 rounded bg-slate-700/60 animate-pulse" />
@@ -246,9 +213,7 @@ export default function CustomPlanModal({ open, onClose, personality, biometrics
                   <span className="text-base">📉</span>
                   <div>
                     <p className="text-xs text-slate-300 font-medium">身体恢复指数</p>
-                    <p className="text-[10px] text-red-400/70 font-mono">
-                      {recoveryAdvice.label} · 睡眠{recovery.sleepScore}/HRV{recovery.hrvScore}/负荷{recovery.activityLoadScore}
-                    </p>
+                    <p className="text-[10px] text-red-400/70 font-mono">低于正常 60% 阈值</p>
                   </div>
                 </div>
                 <span className="text-lg font-bold text-red-400 font-mono tabular-nums">
@@ -278,7 +243,7 @@ export default function CustomPlanModal({ open, onClose, personality, biometrics
                 <p className="text-sm text-slate-200 leading-relaxed">
                   检测到你昨晚睡眠 <span className="text-orange-400 font-semibold">{metrics.sleepHours} 小时</span>，
                   身体恢复指数 <span className="text-red-400 font-semibold">{metrics.recoveryIndex}%</span>。
-                  今日<span className="text-cyber-cyan font-semibold">{recoveryAdvice.text}</span>
+                  今日<span className="text-cyber-cyan font-semibold">不宜冲击极限</span>，以恢复性训练为主！
                 </p>
               </div>
 
@@ -289,7 +254,12 @@ export default function CustomPlanModal({ open, onClose, personality, biometrics
                   今日运动清单
                 </h4>
                 <div className="space-y-2">
-                  {recoveryAdvice.plan.map((item) => (
+                  {[
+                    { emoji: '🧘', title: '动态拉伸', desc: '全身关节活化 · 15 分钟', color: 'from-green-400/20 to-cyan-400/10 border-green-700/30' },
+                    { emoji: '🏋️', title: '低强度深蹲', desc: '3 组 × 15 次 · 自重 50% 配重', color: 'from-cyan-400/20 to-blue-500/10 border-cyber-cyan/30' },
+                    { emoji: '🚶', title: '有氧恢复', desc: '快走或骑行 · 心率 ≤ 130 BPM · 20 分钟', color: 'from-blue-400/20 to-purple-500/10 border-blue-700/30' },
+                    { emoji: '🧊', title: '筋膜放松', desc: '泡沫轴全身滚动 · 10 分钟', color: 'from-purple-400/20 to-pink-500/10 border-purple-700/30' },
+                  ].map((item) => (
                     <div
                       key={item.title}
                       className={`flex items-center gap-3 p-3 rounded-xl border bg-gradient-to-r ${item.color} bg-slate-800/40`}
@@ -306,7 +276,7 @@ export default function CustomPlanModal({ open, onClose, personality, biometrics
 
               {/* Disclaimer */}
               <p className="text-[10px] text-slate-600 font-mono text-center">
-                恢复度 = 睡眠35% + HRV25% + 静息心率20% + 运动负荷20% · 实际计划请咨询专业教练
+                基于{metrics.sourceLabel}数据分析 · 实际计划请咨询专业教练
               </p>
             </div>
           )}
